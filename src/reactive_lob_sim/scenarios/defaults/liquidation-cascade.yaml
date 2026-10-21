@@ -1,0 +1,9 @@
+schema_version: "1"
+id: liquidation-cascade
+description: Open interest doubles with 90% long crowding, then a forced sell of 60% of visible bid depth triggers cascading long liquidations.
+default_duration_s: 600
+shocks:
+  - kind: liquidation_cascade
+    start_s: 150
+    duration_s: 120
+    params: {oi_multiplier: 2.0, long_share: 0.9, trigger_depth_fraction: 0.6}

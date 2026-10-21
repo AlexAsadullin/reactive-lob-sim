@@ -1,0 +1,9 @@
+schema_version: "1"
+id: spread-widening
+description: Liquidity providers quote 6 ticks further out for three minutes and pull quotes inside that band.
+default_duration_s: 600
+shocks:
+  - kind: spread_widening
+    start_s: 120
+    duration_s: 180
+    params: {extra_ticks: 6}

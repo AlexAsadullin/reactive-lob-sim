@@ -1,0 +1,9 @@
+schema_version: "1"
+id: liquidity-withdrawal
+description: 70% of resting liquidity is cancelled and new quotes arrive at 25% of the normal rate for three minutes.
+default_duration_s: 600
+shocks:
+  - kind: liquidity_withdrawal
+    start_s: 120
+    duration_s: 180
+    params: {rate_factor: 0.25, cancel_fraction: 0.7}

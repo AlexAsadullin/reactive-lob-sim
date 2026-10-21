@@ -1,0 +1,5 @@
+schema_version: "1"
+id: baseline
+description: Calibrated market without shocks; the reference for every stress scenario.
+default_duration_s: 600
+shocks: []
