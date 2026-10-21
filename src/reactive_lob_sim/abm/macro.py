@@ -9,7 +9,7 @@ import numpy as np
 from reactive_lob_sim.params import MacroParams
 
 # Liquidations can wipe out open interest; the log-OU step needs a positive floor relative to the start value.
-_MIN_OI_FRACTION = 1e-6
+MIN_OI_FRACTION = 1e-6
 
 
 class FundingOI:
@@ -44,7 +44,7 @@ class FundingOI:
             )
             self.rate = float(np.clip(raw, -p.funding_clip, p.funding_clip))
         dt = p.funding_interval_s
-        log_oi = math.log(max(self.open_interest, p.oi_initial * _MIN_OI_FRACTION))
+        log_oi = math.log(max(self.open_interest, p.oi_initial * MIN_OI_FRACTION))
         log_oi += -p.oi_reversion_per_s * (log_oi - self._log_oi0) * dt
         log_oi += p.oi_vol_per_sqrt_s * math.sqrt(dt) * self._rng.standard_normal()
         self.open_interest = math.exp(log_oi)
