@@ -1,0 +1,319 @@
+"""Shared machinery of the simulators that run on the L3 matching engine (ABM, generative, ground truth).
+
+It owns the order book, records the I1 tape, keeps the impact state, and books the experimental agent's
+orders and fills. Subclasses supply the background order flow by implementing :meth:`_next_event_time` and
+:meth:`_process_next_event`.
+"""
+
+from __future__ import annotations
+
+import abc
+import math
+from bisect import bisect_right
+from dataclasses import dataclass
+
+import numpy as np
+
+from reactive_lob_sim.engine.accounting import FeeSchedule
+from reactive_lob_sim.engine.book import OrderBook
+from reactive_lob_sim.engine.types import (
+    Liquidity,
+    OrderRequest,
+    OrderStatus,
+    OrderType,
+    Owner,
+    Side,
+    SubmitResult,
+    TimeInForce,
+)
+from reactive_lob_sim.impact.model import ImpactState
+from reactive_lob_sim.params import ImpactParams
+from reactive_lob_sim.tape.tape import Tape, TapeRecorder
+from reactive_lob_sim.venue import AgentFill, MarketView, OrderAck
+
+_BPS = 10_000.0
+
+
+@dataclass(frozen=True, slots=True)
+class _OrderMeta:
+    side: Side
+    order_type: OrderType
+    ts_submit: float
+    arrival_mid: float
+    distance_bps: float
+    queue_ahead: float
+
+
+class IdPool:
+    """Set of order ids with O(1) add, remove and uniform sampling."""
+
+    def __init__(self) -> None:
+        self._items: list[int] = []
+        self._pos: dict[int, int] = {}
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __contains__(self, item: int) -> bool:
+        return item in self._pos
+
+    def add(self, item: int) -> None:
+        if item not in self._pos:
+            self._pos[item] = len(self._items)
+            self._items.append(item)
+
+    def discard(self, item: int) -> None:
+        pos = self._pos.pop(item, None)
+        if pos is None:
+            return
+        last = self._items.pop()
+        if pos < len(self._items):
+            self._items[pos] = last
+            self._pos[last] = pos
+
+    def sample(self, rng: np.random.Generator) -> int:
+        return self._items[int(rng.integers(0, len(self._items)))]
+
+    def items(self) -> list[int]:
+        return list(self._items)
+
+
+class L3Market(abc.ABC):
+    """Base class of simulated venues backed by :class:`OrderBook`."""
+
+    def __init__(
+        self,
+        tick_size: float,
+        lot_size: float,
+        qty_tolerance: float,
+        fees: FeeSchedule,
+        impact: ImpactParams | None,
+        recorder: TapeRecorder | None,
+    ) -> None:
+        self._tick = tick_size
+        self._lot = lot_size
+        self.book = OrderBook(qty_tolerance)
+        self._fees = fees
+        self.impact_params = impact
+        self.impact = ImpactState(impact) if impact is not None else None
+        self._recorder = recorder
+        self._t = 0.0
+        self._agent_meta: dict[int, _OrderMeta] = {}
+        self._agent_fills: list[AgentFill] = []
+        self._pools: dict[tuple[int, Side], IdPool] = {}
+        self.last_trade_tick: int | None = None
+        self.funding_rate = 0.0
+        self.open_interest = 0.0
+        self._mid_t: list[float] = []
+        self._mid_v: list[float] = []
+
+    # ------------------------------------------------------------------ MarketBackend
+    @property
+    def tick_size(self) -> float:
+        return self._tick
+
+    @property
+    def lot_size(self) -> float:
+        return self._lot
+
+    @property
+    def t(self) -> float:
+        return self._t
+
+    def advance(self, t: float) -> None:
+        while True:
+            nxt = self._next_event_time()
+            if nxt is None or nxt > t:
+                break
+            self._t = max(self._t, nxt)
+            self._process_next_event()
+        self._t = max(self._t, t)
+        self._on_clock(self._t)
+
+    def view(self) -> MarketView:
+        bid, ask = self.book.best_bid(), self.book.best_ask()
+        return MarketView(
+            t=self._t,
+            best_bid=None if bid is None else bid * self._tick,
+            best_ask=None if ask is None else ask * self._tick,
+            bid_size=0.0 if bid is None else self.book.level_qty(Side.BUY, bid),
+            ask_size=0.0 if ask is None else self.book.level_qty(Side.SELL, ask),
+            last_trade=None if self.last_trade_tick is None else self.last_trade_tick * self._tick,
+            funding_rate=self.funding_rate,
+            open_interest=self.open_interest,
+            tick_size=self._tick,
+        )
+
+    def submit(
+        self,
+        side: Side,
+        order_type: OrderType,
+        qty: float,
+        price: float | None = None,
+        tif: TimeInForce = TimeInForce.GTC,
+    ) -> OrderAck:
+        tick = None if price is None else round(price / self._tick)
+        mid = self.mid_price()
+        arrival = mid if mid is not None else (price or 0.0)
+        touch = self.book.best(side)
+        if order_type is OrderType.LIMIT and tick is not None and touch is not None and arrival > 0:
+            distance = side.sign * (touch - tick) * self._tick / arrival * _BPS
+        else:
+            distance = 0.0
+        req = OrderRequest(Owner.EXPERIMENT, side, order_type, self.round_qty(qty), tick, tif)
+        result = self.execute(req)
+        if result.status is not OrderStatus.REJECTED:
+            meta = _OrderMeta(side, order_type, self._t, arrival, distance, result.queue_ahead)
+            self._agent_meta[result.order_id] = meta
+            for fill in result.fills:
+                self._book_agent_fill(result.order_id, fill.price_tick, fill.qty, Liquidity.TAKER)
+        return OrderAck(result.order_id, result.status, result.reject_reason, result.filled_qty)
+
+    def cancel(self, order_id: int) -> bool:
+        order = self.book.order(order_id)
+        if order is None or order.owner != Owner.EXPERIMENT:
+            return False
+        self.pool(order.owner, order.side).discard(order_id)
+        res = self.book.cancel(order_id)
+        self._record_levels(res.touched)
+        return res.cancelled
+
+    def open_orders(self) -> list[int]:
+        return [o.order_id for o in self.book.orders() if o.owner == Owner.EXPERIMENT]
+
+    def drain_fills(self) -> list[AgentFill]:
+        out, self._agent_fills = self._agent_fills, []
+        return out
+
+    def tape(self) -> Tape | None:
+        return None if self._recorder is None else self._recorder.to_tape()
+
+    # ------------------------------------------------------------------ helpers for subclasses
+    def mid_price(self) -> float | None:
+        mid = self.book.mid_tick()
+        return None if mid is None else mid * self._tick
+
+    def round_qty(self, qty: float) -> float:
+        return max(round(qty / self._lot), 1) * self._lot
+
+    def pool(self, owner: int, side: Side) -> IdPool:
+        key = (owner, side)
+        if key not in self._pools:
+            self._pools[key] = IdPool()
+        return self._pools[key]
+
+    def mid_at(self, t: float) -> float | None:
+        """Mid price recorded at or before ``t`` (from the per-event history)."""
+        i = bisect_right(self._mid_t, t) - 1
+        return self._mid_v[i] if i >= 0 else None
+
+    def note_mid(self) -> None:
+        mid = self.mid_price()
+        if mid is not None:
+            self._mid_t.append(self._t)
+            self._mid_v.append(mid)
+
+    def execute(self, req: OrderRequest) -> SubmitResult:
+        """Submit an order of any owner, record its tape footprint and feed the impact state."""
+        result = self.book.submit(req)
+        self._after_submit(req, result)
+        return result
+
+    def cancel_background(self, order_id: int) -> bool:
+        order = self.book.order(order_id)
+        if order is not None:
+            self.pool(order.owner, order.side).discard(order_id)
+        res = self.book.cancel(order_id)
+        if res.cancelled:
+            self._record_levels(res.touched)
+        return res.cancelled
+
+    def record_snapshot(self, depth: int) -> None:
+        if self._recorder is not None:
+            self._recorder.snapshot(
+                self._t, self.book.levels(Side.BUY, depth), self.book.levels(Side.SELL, depth)
+            )
+
+    @property
+    def recorder(self) -> TapeRecorder | None:
+        return self._recorder
+
+    # ------------------------------------------------------------------ internals
+    def _after_submit(self, req: OrderRequest, result: SubmitResult) -> None:
+        if (
+            result.status is not OrderStatus.REJECTED
+            and req.order_type is OrderType.LIMIT
+            and result.resting_qty > 0
+        ):
+            self.pool(req.owner, req.side).add(result.order_id)
+        if not result.fills:
+            self._record_levels(result.touched)
+            return
+        total = 0.0
+        for fill in result.fills:
+            total += fill.qty
+            if self._recorder is not None:
+                self._recorder.trade(self._t, fill.price_tick, fill.qty, fill.taker_side)
+            if self.book.order(fill.maker_order_id) is None:
+                self.pool(fill.maker_owner, fill.taker_side.opposite).discard(fill.maker_order_id)
+            if fill.maker_owner == Owner.EXPERIMENT:
+                self._book_agent_fill(fill.maker_order_id, fill.price_tick, fill.qty, Liquidity.MAKER)
+        self.last_trade_tick = result.fills[-1].price_tick
+        self._record_levels(result.touched)
+        self._on_trade(req.owner, req.side, total, result.fills[-1].price_tick * self._tick)
+
+    def _on_trade(self, taker_owner: int, side: Side, qty: float, price: float) -> None:
+        if self.impact is None or self.impact_params is None:
+            return
+        if self.impact_params.source == "experimental" and taker_owner != Owner.EXPERIMENT:
+            return
+        self.impact.add_trade(self._t, side.sign, qty, price)
+
+    def _record_levels(self, touched: tuple[tuple[Side, int], ...]) -> None:
+        if self._recorder is None:
+            return
+        seen: set[tuple[Side, int]] = set()
+        for side, tick in touched:
+            if (side, tick) in seen:
+                continue
+            seen.add((side, tick))
+            self._recorder.book_delta(self._t, side, tick, self.book.level_qty(side, tick))
+
+    def _book_agent_fill(self, order_id: int, price_tick: int, qty: float, liquidity: Liquidity) -> None:
+        meta = self._agent_meta[order_id]
+        price = price_tick * self._tick
+        self._agent_fills.append(
+            AgentFill(
+                order_id=order_id,
+                side=meta.side,
+                order_type=meta.order_type,
+                ts_submit_s=meta.ts_submit,
+                ts_fill_s=self._t,
+                price=price,
+                qty=qty,
+                fee=self._fees.fee(price, qty, liquidity),
+                liquidity=liquidity,
+                arrival_mid=meta.arrival_mid,
+                distance_to_touch_bps=meta.distance_bps,
+                queue_ahead_at_entry=meta.queue_ahead,
+            )
+        )
+
+    def perceived_value(self, fundamental: float) -> float:
+        return fundamental + (self.impact.value(self._t) if self.impact is not None else 0.0)
+
+    @staticmethod
+    def lognormal_size(rng: np.random.Generator, log_mean: float, log_sd: float) -> float:
+        return float(math.exp(log_mean + log_sd * rng.standard_normal()))
+
+    # ------------------------------------------------------------------ subclass hooks
+    @abc.abstractmethod
+    def _next_event_time(self) -> float | None:
+        """Time of the next background event, or ``None`` when the flow is exhausted."""
+
+    @abc.abstractmethod
+    def _process_next_event(self) -> None:
+        """Apply the next background event at ``self.t``."""
+
+    def _on_clock(self, t: float) -> None:  # noqa: B027  # optional hook
+        """Called after every :meth:`advance`; subclasses run time-driven processes here."""

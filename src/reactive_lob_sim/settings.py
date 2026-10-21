@@ -92,6 +92,8 @@ class HawkesFitSettings(_Section):
     max_iter: int = Field(ge=1)
     max_spectral_radius: float = Field(gt=0, lt=1)
     tolerance: float = Field(gt=0)
+    init_branching: float = Field(gt=0, lt=1)
+    param_floor: float = Field(gt=0)
 
 
 class ImpactFitSettings(_Section):
