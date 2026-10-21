@@ -171,8 +171,8 @@ runner:
 strategies:
   - {id: mm-touch, kind: market_maker, params: {quote_size: 1.0, offset_ticks: 0, max_inventory: 5.0, requote_ticks: 2}}
   - {id: mm-wide, kind: market_maker, params: {quote_size: 1.0, offset_ticks: 3, max_inventory: 5.0, requote_ticks: 2}}
-  - {id: mom-fast, kind: momentum, params: {lookback_s: 5.0, threshold_bps: 3.0, trade_size: 1.0, max_position: 5.0}}
-  - {id: mom-slow, kind: momentum, params: {lookback_s: 30.0, threshold_bps: 10.0, trade_size: 1.0, max_position: 5.0}}
+  - {id: mom-fast, kind: momentum, params: {lookback_s: 5.0, threshold_bps: 1.5, trade_size: 1.0, max_position: 5.0}}
+  - {id: mom-slow, kind: momentum, params: {lookback_s: 30.0, threshold_bps: 4.0, trade_size: 1.0, max_position: 5.0}}
   - {id: twap-buy-market, kind: twap, params: {side: buy, total_qty: 30.0, style: market, catchup_fraction: 0.1}}
   - {id: twap-sell-passive, kind: twap, params: {side: sell, total_qty: 30.0, style: passive, catchup_fraction: 0.1}}
 

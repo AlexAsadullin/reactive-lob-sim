@@ -351,5 +351,7 @@ class ReplayMarket:
         best_ask = self.book.best(False)
         best_bid = self.book.best(True)
         for order in list(self._orders.values()):
-            if (order.side is Side.BUY and best_ask is not None and best_ask <= order.tick) or (order.side is Side.SELL and best_bid is not None and best_bid >= order.tick):
+            if (order.side is Side.BUY and best_ask is not None and best_ask <= order.tick) or (
+                order.side is Side.SELL and best_bid is not None and best_bid >= order.tick
+            ):
                 self._fill_resting(order, order.remaining)
