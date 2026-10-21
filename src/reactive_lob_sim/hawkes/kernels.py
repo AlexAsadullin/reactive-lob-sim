@@ -1,6 +1,7 @@
 """Numba kernels for the multivariate exponential Hawkes process.
 
-Kernel: phi_ij(t) = alpha_ij * beta * exp(-beta t). With the state S_j(t) = sum_{t_k^j < t} beta exp(-beta (t -
+Kernel: phi_ij(t) = alpha_ij * beta * exp(-beta t). With the state
+S_j(t) = sum_{t_k^j < t} beta exp(-beta (t -
 t_k^j)), the intensity is lambda_i(t) = mu_i m(t) + sum_j alpha_ij S_j(t), and S is updated recursively
 (Ogata 1981; Ozaki 1979), so both simulation and the likelihood cost O(n D) for n events in D dimensions.
 """
@@ -77,7 +78,8 @@ def simulate(mu, alpha, beta, horizon, breaks, mult, seed):  # type: ignore[no-u
 def loglik_grad(mu, alpha, beta, times, types, horizon):  # type: ignore[no-untyped-def]  # pragma: no cover
     """Log-likelihood and its exact gradient with respect to (mu, alpha, beta).
 
-    log L = sum_k log lambda_{c_k}(t_k) - sum_i [mu_i T + sum_j alpha_ij sum_{t^j} (1 - exp(-beta (T - t^j)))].
+    log L = sum_k log lambda_{c_k}(t_k)
+            - sum_i [mu_i T + sum_j alpha_ij sum_{t^j} (1 - exp(-beta (T - t^j)))].
 
     With A_j = sum exp(-beta tau) and B_j = sum tau exp(-beta tau) over past type-j events at lags tau,
     S_j = beta A_j and dS_j/dbeta = A_j - beta B_j; both follow the recursion A <- A e^{-beta dt},

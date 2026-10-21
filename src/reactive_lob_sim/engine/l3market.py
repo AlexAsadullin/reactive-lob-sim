@@ -27,7 +27,7 @@ from reactive_lob_sim.engine.types import (
     TimeInForce,
 )
 from reactive_lob_sim.impact.model import ImpactState
-from reactive_lob_sim.params import ImpactParams
+from reactive_lob_sim.params import ImpactParams, InitialBook, LiquidityParams
 from reactive_lob_sim.tape.tape import Tape, TapeRecorder
 from reactive_lob_sim.venue import AgentFill, MarketView, OrderAck
 
@@ -305,6 +305,55 @@ class L3Market(abc.ABC):
     @staticmethod
     def lognormal_size(rng: np.random.Generator, log_mean: float, log_sd: float) -> float:
         return float(math.exp(log_mean + log_sd * rng.standard_normal()))
+
+    # ------------------------------------------------------------------ liquidity helpers
+    def quote_tick(self, side: Side, ref_tick: float, offset: int) -> int:
+        """Quote ``offset`` ticks away from the reference, never crossing the opposite touch."""
+        if side is Side.BUY:
+            tick = math.floor(ref_tick - 0.5) - offset
+            ask = self.book.best_ask()
+            return min(tick, ask - 1) if ask is not None else tick
+        tick = math.ceil(ref_tick + 0.5) + offset
+        bid = self.book.best_bid()
+        return max(tick, bid + 1) if bid is not None else tick
+
+    def post_quote(
+        self, owner: int, side: Side, tick: int, lp: LiquidityParams, rng: np.random.Generator
+    ) -> None:
+        size = self.round_qty(self.lognormal_size(rng, lp.size.log_mean, lp.size.log_sd))
+        self.execute(OrderRequest(owner, side, OrderType.LIMIT, size, tick, TimeInForce.POST_ONLY))
+
+    def seed_book(
+        self, ib: InitialBook, lp: LiquidityParams, price: float, owner: int, rng: np.random.Generator
+    ) -> None:
+        centre = round(price / self._tick)
+        half = ib.spread_ticks / 2.0
+        for level in range(ib.levels_per_side):
+            bid = math.floor(centre - half) - level
+            ask = math.ceil(centre + half) + level
+            for _ in range(ib.orders_per_level):
+                self.post_quote(owner, Side.BUY, bid, lp, rng)
+                self.post_quote(owner, Side.SELL, ask, lp, rng)
+
+    def ensure_liquidity(
+        self, owner: int, lp: LiquidityParams, ref_tick: float, extra_offset: int, rng: np.random.Generator
+    ) -> int:
+        """Refill a side with ``refill_orders`` quotes when it holds fewer than ``min_orders_per_side`` orders
+        of ``owner``; returns the number of refilled sides. This keeps the book two-sided after shocks."""
+        refilled = 0
+        for side in (Side.BUY, Side.SELL):
+            if len(self.pool(owner, side)) >= lp.min_orders_per_side:
+                continue
+            refilled += 1
+            for k in range(lp.refill_orders):
+                self.post_quote(
+                    owner,
+                    side,
+                    self.quote_tick(side, ref_tick, lp.min_offset_ticks + extra_offset + k),
+                    lp,
+                    rng,
+                )
+        return refilled
 
     # ------------------------------------------------------------------ subclass hooks
     @abc.abstractmethod

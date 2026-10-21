@@ -9,7 +9,8 @@ book, and :func:`run_events_reference` runs the identical stream through :class:
 implementations can be checked against each other and timed against each other.
 
 Event encoding (one row per event): ``kind`` 0 = limit (GTC), 1 = market, 2 = cancel; ``side`` 0 = buy,
-1 = sell; ``tick`` the limit price on the grid; ``qty`` the size; ``ref`` the event index of the limit order to
+1 = sell; ``tick`` the limit price on the grid; ``qty`` the size; ``ref`` the event index of the limit order
+to
 cancel. The order id of a limit order is its event index.
 """
 

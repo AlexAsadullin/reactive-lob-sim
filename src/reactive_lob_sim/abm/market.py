@@ -30,7 +30,7 @@ from reactive_lob_sim.abm.liquidation import LiquidationBook
 from reactive_lob_sim.abm.macro import FundingOI
 from reactive_lob_sim.engine.accounting import FeeSchedule
 from reactive_lob_sim.engine.l3market import L3Market
-from reactive_lob_sim.engine.types import OrderRequest, OrderType, Owner, Side, TimeInForce
+from reactive_lob_sim.engine.types import OrderRequest, OrderType, Owner, Side
 from reactive_lob_sim.hawkes.mle import simulate_hawkes
 from reactive_lob_sim.params import (
     CXL_ASK,
@@ -107,18 +107,9 @@ class ABMMarket(L3Market):
 
     # ------------------------------------------------------------------ setup
     def _seed_book(self) -> None:
-        ib = self.p.initial_book
-        centre = round(self.p.initial_price / self.tick_size)
-        half = ib.spread_ticks / 2.0
-        lp = self.p.liquidity
-        flow = self._rng["flow"]
-        for level in range(ib.levels_per_side):
-            bid = math.floor(centre - half) - level
-            ask = math.ceil(centre + half) + level
-            for _ in range(ib.orders_per_level):
-                for side, tick in ((Side.BUY, bid), (Side.SELL, ask)):
-                    size = self.round_qty(self.lognormal_size(flow, lp.size.log_mean, lp.size.log_sd))
-                    self.execute(OrderRequest(Owner.LIQUIDITY, side, OrderType.LIMIT, size, tick))
+        self.seed_book(
+            self.p.initial_book, self.p.liquidity, self.p.initial_price, Owner.LIQUIDITY, self._rng["flow"]
+        )
         if self._snapshot_depth:
             self.record_snapshot(self._snapshot_depth)
         self.note_mid()
@@ -225,15 +216,6 @@ class ABMMarket(L3Market):
             return value_tick
         return mid + self.p.liquidity.pull_to_value * (value_tick - mid)
 
-    def _quote_tick(self, side: Side, ref: float, offset: int) -> int:
-        if side is Side.BUY:
-            tick = math.floor(ref - 0.5) - offset
-            ask = self.book.best_ask()
-            return min(tick, ask - 1) if ask is not None else tick
-        tick = math.ceil(ref + 0.5) + offset
-        bid = self.book.best_bid()
-        return max(tick, bid + 1) if bid is not None else tick
-
     def _limit_event(self, side: Side) -> None:
         lp = self.p.liquidity
         flow = self._rng["flow"]
@@ -243,9 +225,9 @@ class ABMMarket(L3Market):
             + int(flow.geometric(lp.offset_geom_p))
             - 1
         )
-        tick = self._quote_tick(side, self._reference_tick(), offset)
-        size = self.round_qty(self.lognormal_size(flow, lp.size.log_mean, lp.size.log_sd))
-        self.execute(OrderRequest(Owner.LIQUIDITY, side, OrderType.LIMIT, size, tick, TimeInForce.POST_ONLY))
+        self.post_quote(
+            Owner.LIQUIDITY, side, self.quote_tick(side, self._reference_tick(), offset), lp, flow
+        )
 
     def _cancel_event(self, side: Side) -> None:
         pool = self.pool(Owner.LIQUIDITY, side)
@@ -257,20 +239,10 @@ class ABMMarket(L3Market):
             self.cancel_background(pool.sample(flow))
 
     def _ensure_liquidity(self) -> None:
-        lp = self.p.liquidity
-        flow = self._rng["flow"]
-        for side in (Side.BUY, Side.SELL):
-            if len(self.pool(Owner.LIQUIDITY, side)) >= lp.min_orders_per_side:
-                continue
-            self.n_refills += 1
-            ref = self._reference_tick()
-            for k in range(lp.refill_orders):
-                offset = lp.min_offset_ticks + self.schedule.extra_offset_ticks(self.t) + k
-                tick = self._quote_tick(side, ref, offset)
-                size = self.round_qty(self.lognormal_size(flow, lp.size.log_mean, lp.size.log_sd))
-                self.execute(
-                    OrderRequest(Owner.LIQUIDITY, side, OrderType.LIMIT, size, tick, TimeInForce.POST_ONLY)
-                )
+        extra = self.schedule.extra_offset_ticks(self.t)
+        self.n_refills += self.ensure_liquidity(
+            Owner.LIQUIDITY, self.p.liquidity, self._reference_tick(), extra, self._rng["flow"]
+        )
 
     def _check_liquidations(self) -> None:
         if not self.p.liquidation.enabled:
