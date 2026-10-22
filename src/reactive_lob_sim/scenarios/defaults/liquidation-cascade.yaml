@@ -6,4 +6,4 @@ shocks:
   - kind: liquidation_cascade
     start_s: 150
     duration_s: 120
-    params: {oi_multiplier: 2.0, long_share: 0.9, trigger_depth_fraction: 0.6}
+    params: {oi_multiplier: 2.0, long_share: 0.9, trigger_depth_fraction: 0.6, layers: 8, layer_gap_bps: 1.5}

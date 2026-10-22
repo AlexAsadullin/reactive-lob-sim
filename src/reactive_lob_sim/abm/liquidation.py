@@ -61,10 +61,17 @@ class LiquidationBook:
         if excess > 0:
             del self.positions[:excess]
 
-    def add_crowding(self, mid: float, size: float, is_long: bool) -> None:
-        """Add a crowded position near the current price (used by the liquidation-cascade scenario)."""
+    def add_crowding(self, mid: float, size: float, layers: int, gap: float) -> None:
+        """Add crowded high-leverage longs whose triggers sit ``gap, 2 gap, ...`` (relative) below ``mid``.
+
+        Used by the liquidation-cascade scenario: the layers turn a first forced sell into a cascade.
+        """
         leverage = float(max(self.p.leverages))
-        self.positions.append(Position(is_long, mid, leverage, size, self._trigger(is_long, mid, leverage)))
+        cushion = 1.0 / leverage - self.p.maintenance_margin
+        for k in range(1, layers + 1):
+            trigger = mid * (1.0 - k * gap)
+            entry = trigger / (1.0 - cushion)
+            self.positions.append(Position(True, entry, leverage, size / layers, trigger))
 
     def triggered(self, mid: float) -> list[tuple[Side, float]]:
         """Remove and return the forced orders ``(side, size)`` whose trigger the mid has crossed."""

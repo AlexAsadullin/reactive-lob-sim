@@ -44,6 +44,7 @@ from reactive_lob_sim.params import (
 from reactive_lob_sim.scenarios.models import Scenario, Shock, ShockSchedule
 from reactive_lob_sim.tape.tape import TapeRecorder
 
+_BPS = 10_000.0
 _STREAMS = ("events", "regimes", "index", "flow", "macro", "liquidation")
 
 
@@ -299,7 +300,9 @@ class ABMMarket(L3Market):
                 crowd = (
                     self.p.liquidation.oi_fraction_at_risk * self.open_interest * shock.params["long_share"]
                 )
-                self.liquidations.add_crowding(mid, crowd, is_long=True)
+                self.liquidations.add_crowding(
+                    mid, crowd, int(shock.params["layers"]), shock.params["layer_gap_bps"] / _BPS
+                )
                 depth = sum(q for _, q in self.book.levels(Side.BUY, self.p.initial_book.levels_per_side))
                 qty = self.round_qty(depth * shock.params["trigger_depth_fraction"])
                 self.execute(OrderRequest(Owner.LIQUIDATION, Side.SELL, OrderType.MARKET, qty))

@@ -7,8 +7,9 @@ spread_widening: ``extra_ticks`` added to the minimum quote offset of liquidity 
 liquidity inside the widened band is pulled at the shock start.
 liquidity_withdrawal: ``rate_factor`` (0..1) thins limit-order arrivals, and ``cancel_fraction`` of resting
 liquidity is cancelled at the shock start.
-liquidation_cascade: ``oi_multiplier`` scales open interest, ``long_share`` forces long crowding, and a
-forced sell of ``trigger_depth_fraction`` of the visible bid depth starts the cascade.
+liquidation_cascade: ``oi_multiplier`` scales open interest and ``long_share`` forces long crowding; the
+crowded longs at risk are placed in ``layers`` layers whose liquidation prices sit ``layer_gap_bps`` apart below
+the mid, and a forced sell of ``trigger_depth_fraction`` of the visible bid depth starts the cascade.
 funding_shock: the funding rate is held at ``rate`` for the shock duration.
 """
 
@@ -23,7 +24,9 @@ ShockKind = Literal["spread_widening", "liquidity_withdrawal", "liquidation_casc
 REQUIRED_PARAMS: dict[str, frozenset[str]] = {
     "spread_widening": frozenset({"extra_ticks"}),
     "liquidity_withdrawal": frozenset({"rate_factor", "cancel_fraction"}),
-    "liquidation_cascade": frozenset({"oi_multiplier", "long_share", "trigger_depth_fraction"}),
+    "liquidation_cascade": frozenset(
+        {"oi_multiplier", "long_share", "trigger_depth_fraction", "layers", "layer_gap_bps"}
+    ),
     "funding_shock": frozenset({"rate"}),
 }
 
