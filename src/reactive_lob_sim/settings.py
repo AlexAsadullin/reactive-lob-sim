@@ -181,6 +181,21 @@ class ReproduceSettings(_Section):
     ground_truth_overrides: dict[str, Any]
 
 
+class ReportSettings(_Section):
+    kappa_grid: list[float] = Field(min_length=2)
+    kappa_seeds: int = Field(ge=2)
+    kappa_duration_s: float = Field(gt=0)
+    speed_events: list[int] = Field(min_length=1)
+    speed_repeats: int = Field(ge=2)
+    speed_n_ticks: int = Field(ge=10)
+    speed_p_limit: float = Field(gt=0, lt=1)
+    speed_p_market: float = Field(gt=0, lt=1)
+    speed_offset_geom_p: float = Field(gt=0, le=1)
+    speed_size_log_mean: float
+    speed_size_log_sd: float = Field(ge=0)
+    speed_seed: int
+
+
 class LoggingSettings(_Section):
     level: str
     json_logs: bool
@@ -209,6 +224,7 @@ class Settings(BaseSettings):
     runner: RunnerSettings
     strategies: list[StrategySpec] = Field(min_length=1)
     reproduce: ReproduceSettings
+    report: ReportSettings
     logging: LoggingSettings
 
     @classmethod
@@ -253,6 +269,10 @@ class Settings(BaseSettings):
     @property
     def reproduce_dir(self) -> Path:
         return self.project_dir / "reproduce"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.project_dir / "reports"
 
     @property
     def models_dir(self) -> Path:

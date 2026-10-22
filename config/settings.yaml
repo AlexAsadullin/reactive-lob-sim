@@ -221,6 +221,21 @@ reproduce:
       source: all
       n_exponentials: 8
 
+# Experiments of the research report (make report).
+report:
+  kappa_grid: [0.0, 0.5, 1.0, 2.0, 4.0]
+  kappa_seeds: 8
+  kappa_duration_s: 600.0
+  speed_events: [20000, 200000]
+  speed_repeats: 5
+  speed_n_ticks: 400
+  speed_p_limit: 0.5
+  speed_p_market: 0.15
+  speed_offset_geom_p: 0.3
+  speed_size_log_mean: 0.0
+  speed_size_log_sd: 0.5
+  speed_seed: 11
+
 logging:
   level: INFO
   json_logs: false

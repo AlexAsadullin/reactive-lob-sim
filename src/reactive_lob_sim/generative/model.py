@@ -157,7 +157,7 @@ def train_model(
             opt.zero_grad()
             loss.backward()
             opt.step()
-            total += float(loss) * sel.numel()
+            total += loss.item() * sel.numel()
             count += sel.numel()
         losses.append(total / max(count, 1))
         log.info("generative_epoch", epoch=epoch, loss=losses[-1])
