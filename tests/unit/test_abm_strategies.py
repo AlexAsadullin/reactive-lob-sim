@@ -105,6 +105,32 @@ def test_liquidation_book_triggers() -> None:
     assert lb.triggered(98.0) == [(Side.SELL, 2.5)]
 
 
+def test_forced_order_after_emptied_side_still_executes(settings: Settings, ctx: SimContext) -> None:
+    """A batch whose first forced sell sweeps every bid must not drop the second forced sell.
+
+    ``LiquidationBook.triggered`` removes the positions before they execute, so skipping an order on an
+    empty side would lose the liquidation and leave open interest too high.
+    """
+    from reactive_lob_sim.abm.liquidation import Position
+
+    m = ctx.abm(settings.abm, 120.0, 5)
+    mid = m.mid_price()
+    assert mid is not None
+    bid_depth = sum(q for _, q in m.book.levels(Side.BUY, 10_000))
+    trigger = mid * 2.0  # far above the mid, so both longs are hit at once
+    m.liquidations.positions = [
+        Position(True, mid, 50.0, 3.0 * bid_depth, trigger),
+        Position(True, mid, 50.0, 1.0, trigger),
+    ]
+    oi_before = m.macro.open_interest
+    m._check_liquidations()
+    assert m.n_liquidations == 2
+    assert m.liquidations.positions == []
+    # the first order fills at most the whole bid depth; the second must add a positive fill on top
+    assert oi_before - m.macro.open_interest > bid_depth
+    assert m.book.best(Side.BUY) is not None
+
+
 def test_scenario_validation_schedule_and_library(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="missing"):
         Shock(kind="funding_shock", start_s=0, duration_s=1, params={})

@@ -262,8 +262,9 @@ class ABMMarket(L3Market):
                 return
             for side, size in forced:
                 qty = self.round_qty(size)
-                if self.book.best(side.opposite) is None:
-                    continue
+                # A forced order may meet an emptied side; liquidity providers refill it first, so the
+                # liquidation still executes (at a worse price) instead of silently disappearing.
+                self._ensure_liquidity()
                 result = self.execute(OrderRequest(Owner.LIQUIDATION, side, OrderType.MARKET, qty))
                 self.n_liquidations += 1
                 self.macro.reduce_oi(result.filled_qty)
