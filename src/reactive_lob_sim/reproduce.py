@@ -85,17 +85,36 @@ def train_generative(tape: Tape, ctx: SimContext, settings: Settings, seed: int)
     stream = tokenize(tok, events, cond, ctx.tick_size)
     model, report = train_model(tok, stream, settings.generative, seed)
     k = settings.generative.warmup_events
-    prime = TokenStream(stream.kind[-k:], stream.offset[-k:], stream.size[-k:], stream.dt[-k:], stream.cond[-k:])
+    prime = TokenStream(
+        stream.kind[-k:], stream.offset[-k:], stream.size[-k:], stream.dt[-k:], stream.cond[-k:]
+    )
     return Generative(model, tok, prime, report)
 
 
 def generative_market(
-    gen: Generative, params: ABMParams, horizon: float, seed: int, ctx: SimContext, settings: Settings, record: bool
+    gen: Generative,
+    params: ABMParams,
+    horizon: float,
+    seed: int,
+    ctx: SimContext,
+    settings: Settings,
+    record: bool,
 ) -> GenerativeMarket:
     rec = ctx.recorder(f"gen-{seed}") if record else None
     return GenerativeMarket(
-        gen.model, gen.tok, gen.prime, params, horizon, seed, ctx.tick_size, ctx.lot_size, ctx.qty_tolerance,
-        ctx.fees, settings.generative.temperature, rec, ctx.snapshot_depth,
+        gen.model,
+        gen.tok,
+        gen.prime,
+        params,
+        horizon,
+        seed,
+        ctx.tick_size,
+        ctx.lot_size,
+        ctx.qty_tolerance,
+        ctx.fees,
+        settings.generative.temperature,
+        rec,
+        ctx.snapshot_depth,
     )
 
 
@@ -103,7 +122,12 @@ def _jsonable(obj: Any) -> Any:
     if is_dataclass(obj) and not isinstance(obj, type):
         return _jsonable(asdict(obj))
     if isinstance(obj, dict):
-        return {(k if isinstance(k, str) else "|".join(map(str, k)) if isinstance(k, tuple) else str(k)): _jsonable(v) for k, v in obj.items()}
+        return {
+            (
+                k if isinstance(k, str) else "|".join(map(str, k)) if isinstance(k, tuple) else str(k)
+            ): _jsonable(v)
+            for k, v in obj.items()
+        }
     if isinstance(obj, (list, tuple)):
         return [_jsonable(v) for v in obj]
     if isinstance(obj, np.ndarray):
@@ -138,7 +162,9 @@ def run_study(settings: Settings, out_dir: Path | None = None) -> StudyResult:
     log.info("ground_truth_calibration_tape", trades=cal_tape["trades"].num_rows)
 
     # 2. calibration (simulators only ever see cal_tape)
-    calib = calibrate(cal_tape, settings.abm, settings.calibration, ctx, TapeConditioningSource(cal_tape), rp.seed)
+    calib = calibrate(
+        cal_tape, settings.abm, settings.calibration, ctx, TapeConditioningSource(cal_tape), rp.seed
+    )
     save_calibration(calib, settings.calibration_dir, ctx.venue, ctx.symbol)
     gen = train_generative(cal_tape, ctx, settings, rp.seed)
     save_model(gen.model, gen.tok, settings.models_dir / f"venue={ctx.venue}" / f"symbol={ctx.symbol}")
@@ -167,7 +193,12 @@ def run_study(settings: Settings, out_dir: Path | None = None) -> StudyResult:
 
         for spec in specs:
             unit = (spec.id, episode)
-            live_run = run_strategy(ctx.abm(truth, horizon, truth_seed), build_strategy(spec), run_len, settings.runner.decision_interval_s)
+            live_run = run_strategy(
+                ctx.abm(truth, horizon, truth_seed),
+                build_strategy(spec),
+                run_len,
+                settings.runner.decision_interval_s,
+            )
             ctx_f = FillContext(episode, spec.id, ctx.venue, ctx.symbol, epoch)
             write_fills(fills_table(live_run.fills, ctx_f), live_root, f"{episode}-{spec.id}")
             live_final[unit] = live_run.final_mid
@@ -176,11 +207,27 @@ def run_study(settings: Settings, out_dir: Path | None = None) -> StudyResult:
         def sim_seed(k: int, e: int = e) -> int:
             return rp.seed + _SIM_SEED_OFFSET + _EPISODE_SEED_STRIDE * e + k
 
+        def replay_factory(k: int, rec_: bool, tape: Tape = real_tape) -> MarketBackend:
+            return ctx.replay(tape)
+
         factories: dict[str, tuple[int, Callable[[int, bool], MarketBackend]]] = {
-            "replay": (1, lambda k, rec_: ctx.replay(real_tape)),
-            "zero_intelligence": (rp.abm_seeds, lambda k, rec_: ctx.abm(calib.zero_intelligence, horizon, sim_seed(k), ctx.recorder("zi") if rec_ else None)),
-            "hawkes_abm": (rp.abm_seeds, lambda k, rec_: ctx.abm(calib.abm, horizon, sim_seed(k), ctx.recorder("abm") if rec_ else None)),
-            "generative": (rp.generative_seeds, lambda k, rec_: generative_market(gen, calib.abm, horizon, sim_seed(k), ctx, settings, rec_)),
+            "replay": (1, replay_factory),
+            "zero_intelligence": (
+                rp.abm_seeds,
+                lambda k, rec_: ctx.abm(
+                    calib.zero_intelligence, horizon, sim_seed(k), ctx.recorder("zi") if rec_ else None
+                ),
+            ),
+            "hawkes_abm": (
+                rp.abm_seeds,
+                lambda k, rec_: ctx.abm(
+                    calib.abm, horizon, sim_seed(k), ctx.recorder("abm") if rec_ else None
+                ),
+            ),
+            "generative": (
+                rp.generative_seeds,
+                lambda k, rec_: generative_market(gen, calib.abm, horizon, sim_seed(k), ctx, settings, rec_),
+            ),
         }
         for sim, (n_seeds, make) in factories.items():
             if sim != "replay":
@@ -193,7 +240,11 @@ def run_study(settings: Settings, out_dir: Path | None = None) -> StudyResult:
                 realism[sim].append(score_realism(facts_real, facts))
             for spec in specs:
                 runs = [
-                    outcome_from_run(run_strategy(make(k, False), build_strategy(spec), run_len, settings.runner.decision_interval_s))
+                    outcome_from_run(
+                        run_strategy(
+                            make(k, False), build_strategy(spec), run_len, settings.runner.decision_interval_s
+                        )
+                    )
                     for k in range(n_seeds)
                 ]
                 predictions[sim][(spec.id, episode)] = runs
@@ -203,7 +254,10 @@ def run_study(settings: Settings, out_dir: Path | None = None) -> StudyResult:
     live_units = outcomes_from_fills(read_fills(live_root), live_final, live_submitted)
     g = settings.gap
     scores = gap_scores(
-        {s: {u: [asdict(o) for o in runs] for u, runs in by_unit.items()} for s, by_unit in predictions.items()},
+        {
+            s: {u: [asdict(o) for o in runs] for u, runs in by_unit.items()}
+            for s, by_unit in predictions.items()
+        },
         {u: asdict(o) for u, o in live_units.items()},
         g.metrics,
         g.bootstrap_samples,
@@ -212,7 +266,9 @@ def run_study(settings: Settings, out_dir: Path | None = None) -> StudyResult:
         g.weight_error,
         g.seed,
     )
-    result = StudyResult(calib, gen.report, scores, realism, real_facts, sim_facts, live_units, predictions, out)
+    result = StudyResult(
+        calib, gen.report, scores, realism, real_facts, sim_facts, live_units, predictions, out
+    )
     write_study(result, settings)
     return result
 
@@ -273,7 +329,10 @@ def write_study(result: StudyResult, settings: Settings) -> None:
         "facts": facts_table(result),
         "realism_detail": {s: [asdict(r) for r in rs] for s, rs in result.realism.items()},
         "live": {f"{k[0]}|{k[1]}": asdict(v) for k, v in result.live.items()},
-        "predictions": {s: {f"{k[0]}|{k[1]}": [asdict(o) for o in v] for k, v in p.items()} for s, p in result.predictions.items()},
+        "predictions": {
+            s: {f"{k[0]}|{k[1]}": [asdict(o) for o in v] for k, v in p.items()}
+            for s, p in result.predictions.items()
+        },
     }
     (out / "report.json").write_text(json.dumps(_jsonable(doc), indent=2))
     (out / "summary.md").write_text(summary_markdown(result))
@@ -292,21 +351,23 @@ def summary_markdown(result: StudyResult) -> str:
     ]
     for s in result.scores:
         rho = {m: _fmt(ms.rho.value, 2) for m, ms in s.metrics.items()}
-        lines.append(
-            f"| {s.rank} | {s.simulator} | {_fmt(s.gap.value)} ({_fmt(s.gap.low)} to {_fmt(s.gap.high)}) | "
-            f"{_fmt(s.p_best, 2)} | {rho.get('pnl', '-')} | {rho.get('fill_rate', '-')} | {rho.get('slippage_bps', '-')} |"
-        )
+        gap = f"{_fmt(s.gap.value)} ({_fmt(s.gap.low)} to {_fmt(s.gap.high)})"
+        rhos = " | ".join(rho.get(m, "-") for m in ("pnl", "fill_rate", "slippage_bps"))
+        lines.append(f"| {s.rank} | {s.simulator} | {gap} | {_fmt(s.p_best, 2)} | {rhos} |")
     lines += ["", "| simulator | mean normalised W1 | mean KS | impact response error |", "|---|---|---|---|"]
     for sim, row in realism_table(result).items():
-        lines.append(
-            f"| {sim} | {_fmt(row['wasserstein_norm_mean'])} (se {_fmt(row['wasserstein_norm_se'])}) | "
-            f"{_fmt(row['ks_mean'])} (se {_fmt(row['ks_se'])}) | {_fmt(row['response_error_mean'])} (se {_fmt(row['response_error_se'])}) |"
-        )
+        cells = [
+            f"{_fmt(row[f'{k}_mean'])} (se {_fmt(row[f'{k}_se'])})"
+            for k in ("wasserstein_norm", "ks", "response_error")
+        ]
+        lines.append(f"| {sim} | " + " | ".join(cells) + " |")
     cal = result.calibration
+    radius = cal.flow.hawkes.params.spectral_radius()
     lines += [
         "",
-        f"Calibrated coupling kappa = {_fmt(cal.coupling.kappa)}; square-root law Y = {_fmt(cal.abm.impact.Y)}, "
-        f"delta = {_fmt(cal.abm.impact.delta)}; Hawkes spectral radius = {_fmt(cal.flow.hawkes.params.spectral_radius())}.",
+        f"Calibrated coupling kappa = {_fmt(cal.coupling.kappa)}; "
+        f"square-root law Y = {_fmt(cal.abm.impact.Y)}, delta = {_fmt(cal.abm.impact.delta)}; "
+        f"Hawkes spectral radius = {_fmt(radius)}.",
         "",
     ]
     return "\n".join(lines)

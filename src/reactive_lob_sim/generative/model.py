@@ -60,9 +60,10 @@ class OrderFlowGRU(nn.Module):
     def embed(
         self, kind: torch.Tensor, off: torch.Tensor, size: torch.Tensor, dt: torch.Tensor, cond: torch.Tensor
     ) -> torch.Tensor:
-        return (
+        out: torch.Tensor = (
             self.emb_type(kind) + self.emb_off(off) + self.emb_size(size) + self.emb_dt(dt) + self.cond(cond)
         )
+        return out
 
     def forward(
         self,
@@ -155,7 +156,7 @@ def train_model(
             sel = perm[start : start + cfg.batch_size]
             loss = _loss(model, {k: v[sel] for k, v in train.items()})
             opt.zero_grad()
-            loss.backward()
+            loss.backward()  # type: ignore[no-untyped-call]  # torch ships Tensor.backward untyped
             opt.step()
             total += loss.item() * sel.numel()
             count += sel.numel()

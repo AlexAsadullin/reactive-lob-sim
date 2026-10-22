@@ -62,9 +62,8 @@ class Tokenizer:
 
     def encode_dts(self, dts: np.ndarray) -> np.ndarray:
         logs = np.log(np.maximum(dts, self.dt_floor_s))
-        return np.clip(np.searchsorted(self.dt_edges, logs, side="right") - 1, 0, self.n_dts - 1).astype(
-            np.int64
-        )
+        bins = np.searchsorted(self.dt_edges, logs, side="right") - 1
+        return np.asarray(np.clip(bins, 0, self.n_dts - 1), dtype=np.int64)
 
     def decode_dt(self, bin_index: int, u: float) -> float:
         lo, hi = self.dt_edges[bin_index], self.dt_edges[bin_index + 1]
@@ -86,7 +85,7 @@ def trailing_vol(t: np.ndarray, mid: np.ndarray, window_s: float) -> np.ndarray:
     r2 = np.concatenate([[0.0], np.diff(np.log(mid)) ** 2])
     cum = np.cumsum(r2)
     start = np.searchsorted(t, t - window_s, side="left")
-    return np.sqrt(np.maximum(cum - cum[start], 0.0))
+    return np.asarray(np.sqrt(np.maximum(cum - cum[start], 0.0)), dtype=np.float64)
 
 
 def _step_values(ts: np.ndarray, values: np.ndarray, at: np.ndarray, default: float) -> np.ndarray:

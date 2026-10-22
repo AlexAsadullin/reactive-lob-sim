@@ -147,7 +147,7 @@ class OrderBook:
             delta = order.qty - qty
             order.qty = qty
             self._level_qty[order.side][price] -= delta
-            touched = ((order.side, price),)
+            touched: tuple[tuple[Side, int], ...] = ((order.side, price),)
             ahead = self.queue_ahead(order_id)
             return SubmitResult(order_id, OrderStatus.ACCEPTED, (), qty, None, ahead, touched)
         self._remove(order)

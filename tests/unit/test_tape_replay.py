@@ -53,7 +53,7 @@ def test_tape_roundtrip_splits_by_date(tmp_path: Path) -> None:
     assert back["trades"].schema == SCHEMAS["trades"]
     window = read_tape(tmp_path, "synth", "SYN-USDT-PERP", EPOCH, EPOCH + 2 * NS_PER_S)
     assert window["trades"].num_rows == 1
-    ts, rate = channel_values(back, "funding", "rate")
+    _, rate = channel_values(back, "funding", "rate")
     assert rate.tolist() == [0.0001]
     with pytest.raises(ValueError, match="scalar"):
         channel_values(back, "trades", "price")
@@ -62,7 +62,17 @@ def test_tape_roundtrip_splits_by_date(tmp_path: Path) -> None:
 
 
 def test_conform_fills_missing_nullable_columns() -> None:
-    table = pa.table({"venue": ["v"], "symbol": ["s"], "ts_local": [1], "price": [1.0], "size": [2.0], "side": ["buy"], "trade_id": ["1"]})
+    table = pa.table(
+        {
+            "venue": ["v"],
+            "symbol": ["s"],
+            "ts_local": [1],
+            "price": [1.0],
+            "size": [2.0],
+            "side": ["buy"],
+            "trade_id": ["1"],
+        }
+    )
     out = conform("trades", table)
     assert out.schema == SCHEMAS["trades"]
     assert out.column("ts_exchange").null_count == 1
@@ -137,8 +147,14 @@ def test_replay_market_orders_do_not_consume_twice() -> None:
     view = mk.view()
     assert view.best_ask == pytest.approx(100.02)
     assert view.ask_size == pytest.approx(5.0)
-    assert mk.submit(Side.BUY, OrderType.LIMIT, 1.0, 100.05, TimeInForce.POST_ONLY).reject_reason is RejectReason.POST_ONLY_WOULD_CROSS
-    assert mk.submit(Side.SELL, OrderType.LIMIT, 50.0, 99.0, TimeInForce.FOK).reject_reason is RejectReason.FOK_INSUFFICIENT_LIQUIDITY
+    assert (
+        mk.submit(Side.BUY, OrderType.LIMIT, 1.0, 100.05, TimeInForce.POST_ONLY).reject_reason
+        is RejectReason.POST_ONLY_WOULD_CROSS
+    )
+    assert (
+        mk.submit(Side.SELL, OrderType.LIMIT, 50.0, 99.0, TimeInForce.FOK).reject_reason
+        is RejectReason.FOK_INSUFFICIENT_LIQUIDITY
+    )
     assert mk.submit(Side.SELL, OrderType.LIMIT, 1.0, None).reject_reason is RejectReason.INVALID_PRICE
     ioc = mk.submit(Side.SELL, OrderType.LIMIT, 1.0, 101.0, TimeInForce.IOC)
     assert ioc.status is OrderStatus.CANCELLED

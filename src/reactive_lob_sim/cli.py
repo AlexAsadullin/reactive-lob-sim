@@ -9,7 +9,9 @@ import typer
 from reactive_lob_sim.logging_setup import configure_logging
 from reactive_lob_sim.settings import Settings, load_settings
 
-app = typer.Typer(add_completion=False, help="Reactive crypto LOB simulator and sim-to-real gap score (Tradeq S3).")
+app = typer.Typer(
+    add_completion=False, help="Reactive crypto LOB simulator and sim-to-real gap score (Tradeq S3)."
+)
 
 
 def _settings() -> Settings:
@@ -57,7 +59,9 @@ def calibrate(
         source = TapeConditioningSource(tape)
     result = run_calibration(tape, settings.abm, settings.calibration, ctx, source, seed)
     path = save_calibration(result, settings.calibration_dir, venue, symbol)
-    typer.echo(f"kappa={result.coupling.kappa:.3f} Y={result.abm.impact.Y:.3f} delta={result.abm.impact.delta:.3f}")
+    typer.echo(
+        f"kappa={result.coupling.kappa:.3f} Y={result.abm.impact.Y:.3f} delta={result.abm.impact.delta:.3f}"
+    )
     typer.echo(f"written {path}")
 
 
@@ -78,7 +82,9 @@ def simulate(
     result = run_simulation(
         settings, scenario, seed, duration_s, venue or settings.market.venue, symbol or settings.market.symbol
     )
-    typer.echo(f"simulation_id={result.simulation_id} trades={result.n_trades} liquidations={result.n_liquidations}")
+    typer.echo(
+        f"simulation_id={result.simulation_id} trades={result.n_trades} liquidations={result.n_liquidations}"
+    )
     typer.echo(f"tape_path={result.tape_path}")
 
 

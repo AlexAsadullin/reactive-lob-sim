@@ -8,8 +8,8 @@ liquidity inside the widened band is pulled at the shock start.
 liquidity_withdrawal: ``rate_factor`` (0..1) thins limit-order arrivals, and ``cancel_fraction`` of resting
 liquidity is cancelled at the shock start.
 liquidation_cascade: ``oi_multiplier`` scales open interest and ``long_share`` forces long crowding; the
-crowded longs at risk are placed in ``layers`` layers whose liquidation prices sit ``layer_gap_bps`` apart below
-the mid, and a forced sell of ``trigger_depth_fraction`` of the visible bid depth starts the cascade.
+crowded longs at risk are placed in ``layers`` layers whose liquidation prices sit ``layer_gap_bps`` apart
+below the mid, and a forced sell of ``trigger_depth_fraction`` of the visible bid depth starts the cascade.
 funding_shock: the funding rate is held at ``rate`` for the shock duration.
 """
 

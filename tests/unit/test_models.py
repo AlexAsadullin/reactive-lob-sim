@@ -20,8 +20,14 @@ from reactive_lob_sim.timeutil import NS_PER_S
 
 HAWKES = HawkesParams(mu=[0.5, 0.3], alpha=[[0.3, 0.1], [0.2, 0.4]], beta=2.0)
 FIT = HawkesFitSettings(
-    init_beta=1.0, beta_min=0.01, beta_max=50.0, max_iter=500, max_spectral_radius=0.99,
-    tolerance=1e-10, init_branching=0.5, param_floor=1e-6,
+    init_beta=1.0,
+    beta_min=0.01,
+    beta_max=50.0,
+    max_iter=500,
+    max_spectral_radius=0.99,
+    tolerance=1e-10,
+    init_branching=0.5,
+    param_floor=1e-6,
 )
 
 
@@ -37,7 +43,7 @@ def test_hawkes_gradient_matches_finite_differences() -> None:
     mu, alpha, beta = HAWKES.mu_array(), HAWKES.alpha_array(), HAWKES.beta
     ll, g_mu, g_alpha, g_beta = kernels.loglik_grad(mu, alpha, beta, times, types, 300.0)
     h = 1e-6
-    num_mu = (kernels.loglik_grad(mu + [h, 0], alpha, beta, times, types, 300.0)[0] - ll) / h
+    num_mu = (kernels.loglik_grad(mu + np.array([h, 0.0]), alpha, beta, times, types, 300.0)[0] - ll) / h
     a2 = alpha.copy()
     a2[1, 0] += h
     num_alpha = (kernels.loglik_grad(mu, a2, beta, times, types, 300.0)[0] - ll) / h
@@ -69,18 +75,36 @@ def test_hawkes_regime_multiplier_and_errors() -> None:
         simulate_hawkes(p, 10.0, 0, np.array([1.0]), np.array([1.0]))
     with pytest.raises(ValueError, match="sorted"):
         fit_hawkes(np.array([2.0, 1.0, 3.0, 4.0]), np.zeros(4, dtype=np.int64), 1, 5.0, FIT)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="square matrix"):
         HawkesParams(mu=[1.0], alpha=[[0.1, 0.2]], beta=1.0)
 
 
 def test_hawkes_intensity_kernel() -> None:
-    out = kernels.intensity_at(np.array([1.0]), np.array([[0.5]]), 2.0, np.array([1.0]), np.zeros(1, dtype=np.int64), np.array([0.5, 2.0]))
+    out = kernels.intensity_at(
+        np.array([1.0]),
+        np.array([[0.5]]),
+        2.0,
+        np.array([1.0]),
+        np.zeros(1, dtype=np.int64),
+        np.array([0.5, 2.0]),
+    )
     assert out[0, 0] == pytest.approx(1.0)
     assert out[1, 0] == pytest.approx(1.0 + 0.5 * 2.0 * np.exp(-2.0))
 
 
 def impact(**kw: float) -> ImpactParams:
-    base = dict(Y=0.5, delta=0.5, sigma_window=1e-3, volume_window=100.0, window_s=30.0, tau0_s=5.0, beta=0.5, kappa=1.0, source="all", n_exponentials=8)
+    base: dict[str, float | str] = {
+        "Y": 0.5,
+        "delta": 0.5,
+        "sigma_window": 1e-3,
+        "volume_window": 100.0,
+        "window_s": 30.0,
+        "tau0_s": 5.0,
+        "beta": 0.5,
+        "kappa": 1.0,
+        "source": "all",
+        "n_exponentials": 8,
+    }
     base.update(kw)
     return ImpactParams.model_validate(base)
 
@@ -114,17 +138,35 @@ def test_fit_impact_recovers_square_root_law() -> None:
     r = np.sign(q) * true_y * sigma * (np.abs(q) / v_w) ** true_delta + rng.normal(0, sigma * 0.3, n_w)
     mid = 100.0 * np.cumprod(np.concatenate([[1.0], 1 + r]))
     ts = (np.arange(n_w + 1) * w_s * NS_PER_S).astype(np.int64)
-    book = BookSeries(ts, mid / 0.01 - 0.5, mid / 0.01 + 0.5, np.ones(n_w + 1), np.ones(n_w + 1), np.ones(n_w + 1), np.ones(n_w + 1))
+    book = BookSeries(
+        ts,
+        mid / 0.01 - 0.5,
+        mid / 0.01 + 0.5,
+        np.ones(n_w + 1),
+        np.ones(n_w + 1),
+        np.ones(n_w + 1),
+        np.ones(n_w + 1),
+    )
     trade_ts = ts[:-1] + NS_PER_S
     trades = TradeSeries(trade_ts, mid[:-1], np.abs(q) + 1e-9, np.sign(q))
     fit_cfg = ImpactFitSettings(
-        window_s=w_s, n_bins=8, lag_bin_s=w_s, max_lag_bins=5, delta_min=0.2, delta_max=1.0, beta_max=3.0,
-        n_exponentials=8, kappa_grid=[0.0, 1.0], probe_duration_s=60.0, probe_volume_fraction=0.5,
-        probe_child_interval_s=2.0, probe_seeds=1,
+        window_s=w_s,
+        n_bins=8,
+        lag_bin_s=w_s,
+        max_lag_bins=5,
+        delta_min=0.2,
+        delta_max=1.0,
+        beta_max=3.0,
+        n_exponentials=8,
+        kappa_grid=[0.0, 1.0],
+        probe_duration_s=60.0,
+        probe_volume_fraction=0.5,
+        probe_child_interval_s=2.0,
+        probe_seeds=1,
     )
     fit = fit_impact(book, trades, fit_cfg)
     assert fit.params.delta == pytest.approx(true_delta, abs=0.12)
-    assert fit.params.Y == pytest.approx(true_y, rel=0.25)
+    assert pytest.approx(true_y, rel=0.25) == fit.params.Y
     assert fit.params.kappa == 1.0
 
 

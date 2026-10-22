@@ -35,7 +35,9 @@ def exponential_sum(tau0: float, beta: float, n_terms: int) -> tuple[np.ndarray,
 
 def peak_impact(params: ImpactParams, qty: float, price: float) -> float:
     """Immediate impact Y * sigma_w * P * (q / V_w)^delta of one trade of size ``qty`` (before kappa)."""
-    return params.Y * params.sigma_window * price * (max(qty, 0.0) / params.volume_window) ** params.delta
+    return float(
+        params.Y * params.sigma_window * price * (max(qty, 0.0) / params.volume_window) ** params.delta
+    )
 
 
 class ImpactState:

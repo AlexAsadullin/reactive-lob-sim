@@ -24,7 +24,9 @@ from reactive_lob_sim.engine.types import (
 EPS = 1e-9
 
 
-def limit(side: Side, qty: float, tick: int, owner: int = 2, tif: TimeInForce = TimeInForce.GTC) -> OrderRequest:
+def limit(
+    side: Side, qty: float, tick: int, owner: int = 2, tif: TimeInForce = TimeInForce.GTC
+) -> OrderRequest:
     return OrderRequest(owner, side, OrderType.LIMIT, qty, tick, tif)
 
 
@@ -66,7 +68,10 @@ def test_limit_crosses_then_rests(book: OrderBook) -> None:
 
 
 def test_post_only_ioc_fok(book: OrderBook) -> None:
-    assert book.submit(limit(Side.BUY, 1.0, 101, tif=TimeInForce.POST_ONLY)).reject_reason is RejectReason.POST_ONLY_WOULD_CROSS
+    assert (
+        book.submit(limit(Side.BUY, 1.0, 101, tif=TimeInForce.POST_ONLY)).reject_reason
+        is RejectReason.POST_ONLY_WOULD_CROSS
+    )
     ok = book.submit(limit(Side.BUY, 1.0, 100, tif=TimeInForce.POST_ONLY))
     assert ok.status is OrderStatus.ACCEPTED
     assert ok.queue_ahead == 0.0
@@ -83,7 +88,10 @@ def test_post_only_ioc_fok(book: OrderBook) -> None:
 
 def test_invalid_orders(book: OrderBook) -> None:
     assert book.submit(limit(Side.BUY, 0.0, 99)).reject_reason is RejectReason.INVALID_QTY
-    assert book.submit(OrderRequest(1, Side.BUY, OrderType.LIMIT, 1.0)).reject_reason is RejectReason.INVALID_PRICE
+    assert (
+        book.submit(OrderRequest(1, Side.BUY, OrderType.LIMIT, 1.0)).reject_reason
+        is RejectReason.INVALID_PRICE
+    )
     assert book.modify(999, 1.0).reject_reason is RejectReason.UNKNOWN_ORDER
     assert not book.cancel(999).cancelled
 
@@ -99,7 +107,8 @@ def test_cancel_and_modify_priority(book: OrderBook) -> None:
     assert moved.filled_qty == pytest.approx(1.5)
     assert book.modify(2, new_qty=0.0).reject_reason is RejectReason.INVALID_QTY
     res = book.cancel(1)
-    assert res.cancelled and res.qty == pytest.approx(2.0)
+    assert res.cancelled
+    assert res.qty == pytest.approx(2.0)
     assert book.order(1) is None
 
 
@@ -119,7 +128,9 @@ ops = st.lists(
 
 @settings(max_examples=150, deadline=None)
 @given(ops)
-def test_book_invariants_and_conservation(sequence: list[tuple[str, Side, int, int, TimeInForce, int]]) -> None:
+def test_book_invariants_and_conservation(
+    sequence: list[tuple[str, Side, int, int, TimeInForce, int]],
+) -> None:
     book = OrderBook(EPS)
     ids: list[int] = []
     for op, side, tick, qty, tif, pick in sequence:
