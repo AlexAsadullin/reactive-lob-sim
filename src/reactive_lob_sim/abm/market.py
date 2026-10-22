@@ -115,6 +115,11 @@ class ABMMarket(L3Market):
         self.note_mid()
 
     # ------------------------------------------------------------------ state
+    @property
+    def n_scheduled_events(self) -> int:
+        """Number of background flow events drawn for the whole horizon."""
+        return len(self._ev_t_list)
+
     def regime(self, t: float) -> int:
         i = int(np.searchsorted(self._regime_breaks, t, side="right") - 1)
         return int(self._regime_states[max(i, 0)])
