@@ -22,7 +22,7 @@ make report                     # reproduce + kappa sweep + engine speed, tables
 make serve                      # sim-service on 127.0.0.1:8609
 ```
 
-CLI: `sim seed-scenarios | calibrate --venue --symbol --start --end | simulate --scenario | serve | reproduce | report`.
+CLI: `sim seed-scenarios [--refresh] | calibrate --venue --symbol --start --end | simulate --scenario | serve | reproduce | report`.
 
 ## Configuration
 
@@ -64,6 +64,51 @@ I1 tape schema), `GET /v1/simulations/{id}`, calibration files at
 (baseline, spread widening, liquidity withdrawal, liquidation cascade, funding shock) at
 `$TRADEQ_DATA_DIR/reactive-lob-sim/scenarios/*.yaml`. Consumed: 6.2 (I1 tape), 6.3 (I2 point-in-time funding
 and OI, optional) and 6.4 (I6 shadow fills, the live side of the gap score).
+
+### impact.json (read by I6)
+
+Keys: `schema_version` ("1"), `model` (always `propagator_sqrt_v1`), `params`, `fitted_at` (ISO-8601 UTC),
+`sample_start` and `sample_end` (the calibration window, ISO-8601 UTC). A trade of signed size `s*q` at time
+`t_i` moves the price by `I(t) = kappa * s * Y * sigma_window * P * (q / volume_window)^delta * (1 + (t - t_i) / tau0_s)^(-beta)`,
+in price units, where `P` is the current price.
+
+| `params` key | Type | Meaning |
+|---|---|---|
+| `Y` | float | prefactor of the square-root law |
+| `delta` | float | size exponent of the square-root law (fit bounds 0.2 to 1.0) |
+| `sigma_window` | float | relative mid volatility over one window of `window_s` |
+| `volume_window` | float | mean traded volume per window, in base units |
+| `window_s` | float | estimation window of the square-root law, seconds |
+| `tau0_s` | float | propagator time scale, seconds |
+| `beta` | float | propagator decay exponent (0 means permanent impact) |
+| `kappa` | float | calibrated coupling; 1 means the raw tape-fitted impact |
+| `source` | string | `all` (every trade feeds the impact state) or `experimental` (only the tested agent) |
+| `n_exponentials` | float | terms of the internal sum-of-exponentials approximation; no meaning outside S3 |
+
+`abm.json` in the same directory is the full ABM calibration; it is S3-internal and may change.
+
+### scenarios/*.yaml (read by I6)
+
+Every file has the keys `schema_version` ("1"), `id` (lower-case, digits and hyphens; equals the file name),
+`description`, `default_duration_s` (the run length the shocks were written for), `shocks` (list, empty for
+the baseline) and `abm_overrides` (partial ABM parameters, empty in all shipped files). Two optional keys stretch
+and shift every shock: a shock runs from `time_offset_s + time_scale * start_s` for `time_scale * duration_s`
+seconds. Their defaults are `time_scale: 1` and `time_offset_s: 0`, and files at the defaults do not contain
+them, so the shipped files keep exactly the six keys above. Each shock has `kind`, `start_s`, `duration_s` and
+`params`:
+
+| `kind` | `params` | Effect in the S3 market |
+|---|---|---|
+| `spread_widening` | `extra_ticks` | quotes move `extra_ticks` further out; quotes inside that band are pulled |
+| `liquidity_withdrawal` | `rate_factor`, `cancel_fraction` | `cancel_fraction` of resting quotes cancelled at the start; new quotes arrive at `rate_factor` of the normal rate |
+| `liquidation_cascade` | `oi_multiplier`, `long_share`, `trigger_depth_fraction`, `layers`, `layer_gap_bps` | open interest times `oi_multiplier`, long share forced to `long_share`, crowded longs in `layers` layers `layer_gap_bps` apart, and a forced sell of `trigger_depth_fraction` of visible bid depth |
+| `funding_shock` | `rate` | funding held at `rate` per interval |
+
+All `params` are required. `sim seed-scenarios --refresh` rewrites shipped files that differ from the
+current defaults (other files are left alone) and exits non-zero if any file in the directory fails
+validation. The shipped shocks last 120 to 300 s inside 600 s runs. The funding shock lasts 300 s, so it
+covers no 8-hour settlement and pays nothing in a replay with 8-hour funding unless `time_scale` stretches it
+over one; the S3 market fixes funding every 60 s, where the shock is paid five times.
 
 ## Key results
 
