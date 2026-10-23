@@ -55,6 +55,26 @@ place that constructs the simulators. `service/app.py` is the sim-service.
 4. Commit fba11c8 wrote the lean README with a key-results table.
 5. `docs/report.md` was checked number by number against tables.md, study.json, kappa_sweep.json and engine_speed.json. The corrected text went back to the orchestrator, which writes and commits it (subagents cannot write report files). Corrections: the Hawkes ABM OFI R squared is 0.78, not 0.81; P(best) of replay is exactly 1.0 (all 1000 resamples); the claim "1 hour of simulated market per 10 seconds" was wrong by a factor of about 14 (12 events/s times 3600 s at 61823 events/s is about 0.7 s); the Hawkes ABM does not have the closest spread among reactive simulators (the generative one does), so the Decision now cites KS, OFI R squared and the sign of the autocorrelation; the R squared of the square-root fit is over the 8 bin means, not over 59 windows; the response-error result (Hawkes ABM 1.027 against zero-intelligence 0.860) and the 10-second critical values were added; Smith, Farmer et al. (2003) and the arXiv links of DiffLOB, the LLM-market replication and Lopez-Lira were added to the references.
 
+## Update 2026-10-23: I6 adapter findings
+
+I6 reads impact.json and scenarios/*.yaml through shadow-exchange/src/shadow_exchange/s3_adapter.py, which
+rejects unknown document keys, unknown shock keys and unknown params. Keep those formats stable.
+
+1. Commit 390884b added the optional scenario keys `time_scale` (default 1) and `time_offset_s` (default 0). A
+   shock runs from `time_offset_s + time_scale * start_s` for `time_scale * duration_s`, the same mapping the
+   adapter applies from its own config. `Scenario.to_document()` omits them at their defaults, so the shipped
+   files keep the six keys the adapter accepts. The adapter rejects a file that sets them, until I6 decides to
+   read them from the file. The ABM applies them through `Scenario.scaled_shocks()`.
+2. `sim seed-scenarios --refresh` rewrites shipped default files that differ from the current defaults (never
+   files with other ids), then validates every file and exits 1 on an invalid one. It was run on the data
+   root on 2026-10-23. liquidation-cascade.yaml now has `layers` and `layer_gap_bps`, and every file validates.
+   `tests/unit/test_scenario_contract.py` fails if a seeded file misses a required field or carries keys
+   beyond the contract set.
+3. The funding-shock description and the README state that the 300 s shock covers no 8-hour settlement.
+4. Commit c19eef6 documents every impact.json and scenario field in the README.
+5. The report numbers did not change, because the report experiments use no scenario file and default
+   timing leaves the ABM unchanged. `make test` gave 43 passed and 92% coverage; lint and mypy are clean.
+
 ## Mistakes and lessons
 
 1. The first build left coverage at 62% against the 85% platform target, and lint and mypy were not clean, even though the repo was described as done. Run `make lint typecheck test` before claiming done.
