@@ -1,6 +1,10 @@
 schema_version: "1"
 id: funding-shock
-description: Funding jumps to +0.30% per interval for five minutes, so crowded longs de-lever and long crowding rises.
+description: >-
+  Funding is held at +0.30% per interval for five minutes, so crowded longs de-lever and long crowding rises.
+  The S3 market fixes funding every 60 s, so the shock is paid five times there; a replay with 8-hour
+  settlements sees no settlement inside a 300 s window and pays nothing unless the shock is stretched
+  (time_scale) to cover one.
 default_duration_s: 600
 shocks:
   - kind: funding_shock

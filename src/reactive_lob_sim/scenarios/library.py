@@ -42,16 +42,46 @@ def default_scenarios() -> list[Scenario]:
     return out
 
 
-def seed_library(directory: Path) -> list[Path]:
-    """Write default scenarios that are not yet present; existing files are never overwritten."""
+def _dump(sc: Scenario) -> str:
+    return yaml.safe_dump(sc.to_document(), sort_keys=False)
+
+
+def scenario_error(path: Path) -> str | None:
+    """Why ``path`` is not a valid scenario under the current schema, or ``None`` if it is."""
+    try:
+        Scenario.model_validate(yaml.safe_load(path.read_text()))
+    except (ValueError, yaml.YAMLError) as exc:
+        return str(exc)
+    return None
+
+
+def seed_library(directory: Path, refresh: bool = False) -> list[Path]:
+    """Write the default scenarios into ``directory``.
+
+    Without ``refresh`` only missing files are written. With ``refresh`` a default scenario's file is also
+    rewritten when it differs from the shipped default (for example a file written by an older schema);
+    files with other ids are never touched.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     written = []
     for sc in default_scenarios():
         path = directory / f"{sc.id}.yaml"
-        if not path.exists():
-            path.write_text(yaml.safe_dump(sc.model_dump(mode="json"), sort_keys=False))
+        text = _dump(sc)
+        stale = refresh and path.exists() and path.read_text() != text
+        if not path.exists() or stale:
+            path.write_text(text)
             written.append(path)
     return written
+
+
+def validate_library(directory: Path) -> dict[Path, str]:
+    """Validation errors of every ``*.yaml`` in ``directory`` (empty when all files are valid)."""
+    errors: dict[Path, str] = {}
+    for path in sorted(directory.glob("*.yaml")):
+        error = scenario_error(path)
+        if error is not None:
+            errors[path] = error
+    return errors
 
 
 def list_scenarios(directory: Path) -> list[Scenario]:
@@ -61,6 +91,12 @@ def list_scenarios(directory: Path) -> list[Scenario]:
 
 
 def load_scenario(directory: Path, scenario_id: str) -> Scenario:
+    """Load one scenario; ``<id>.yaml`` is read directly, so an invalid unrelated file does not block it."""
+    path = directory / f"{scenario_id}.yaml"
+    if path.exists():
+        sc = Scenario.model_validate(yaml.safe_load(path.read_text()))
+        if sc.id == scenario_id:
+            return sc
     for sc in list_scenarios(directory):
         if sc.id == scenario_id:
             return sc

@@ -11,6 +11,13 @@ liquidation_cascade: ``oi_multiplier`` scales open interest and ``long_share`` f
 crowded longs at risk are placed in ``layers`` layers whose liquidation prices sit ``layer_gap_bps`` apart
 below the mid, and a forced sell of ``trigger_depth_fraction`` of the visible bid depth starts the cascade.
 funding_shock: the funding rate is held at ``rate`` for the shock duration.
+
+Timing. ``time_scale`` (default 1) and ``time_offset_s`` (default 0) are optional document fields that stretch
+and shift every shock: a shock runs from ``time_offset_s + time_scale * start_s`` for ``time_scale *
+duration_s`` seconds, the same mapping the Shadow Exchange (I6) applies from its own configuration. They let
+a consumer request longer shocks (for example ``time_scale: 144`` turns a 600 s scenario into a 24 h one)
+without rewriting the shock list. :meth:`Scenario.to_document` omits them when they hold their defaults, so
+files with default timing keep exactly the key set that existing consumers parse.
 """
 
 from __future__ import annotations
@@ -50,6 +57,13 @@ class Shock(BaseModel):
         return self.start_s <= t < self.start_s + self.duration_s
 
 
+# Keys that every seeded document carries; optional timing keys are written only when not at default.
+DOCUMENT_KEYS: frozenset[str] = frozenset(
+    {"schema_version", "id", "description", "default_duration_s", "shocks", "abm_overrides"}
+)
+TIMING_DEFAULTS: dict[str, float] = {"time_scale": 1.0, "time_offset_s": 0.0}
+
+
 class Scenario(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -59,6 +73,33 @@ class Scenario(BaseModel):
     default_duration_s: float = Field(gt=0)
     shocks: list[Shock] = Field(default_factory=list)
     abm_overrides: dict[str, Any] = Field(default_factory=dict)
+    time_scale: float = Field(default=TIMING_DEFAULTS["time_scale"], gt=0)
+    time_offset_s: float = Field(default=TIMING_DEFAULTS["time_offset_s"], ge=0)
+
+    def scaled_shocks(self) -> list[Shock]:
+        """Shocks with the timing mapping applied (identical to ``shocks`` at default timing)."""
+        return [
+            s.model_copy(
+                update={
+                    "start_s": self.time_offset_s + self.time_scale * s.start_s,
+                    "duration_s": self.time_scale * s.duration_s,
+                }
+            )
+            for s in self.shocks
+        ]
+
+    @property
+    def effective_duration_s(self) -> float:
+        """``default_duration_s`` under the timing mapping."""
+        return self.time_offset_s + self.time_scale * self.default_duration_s
+
+    def to_document(self) -> dict[str, Any]:
+        """The YAML document: every field, except timing fields that hold their defaults."""
+        doc: dict[str, Any] = self.model_dump(mode="json")
+        for key, default in TIMING_DEFAULTS.items():
+            if doc[key] == default:
+                del doc[key]
+        return doc
 
 
 class ShockSchedule:

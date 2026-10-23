@@ -96,7 +96,7 @@ class ABMMarket(L3Market):
         self._ev_k_list: list[int] = self._ev_k.tolist()
         self.fundamental = params.initial_price
         self._fund_t = 0.0
-        self.schedule = ShockSchedule(scenario.shocks if scenario else [])
+        self.schedule = ShockSchedule(scenario.scaled_shocks() if scenario else [])
         self.macro = FundingOI(params.macro, self._rng["macro"])
         self.funding_rate = self.macro.rate
         self.open_interest = self.macro.open_interest

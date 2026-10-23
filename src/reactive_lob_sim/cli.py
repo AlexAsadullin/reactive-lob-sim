@@ -21,13 +21,22 @@ def _settings() -> Settings:
 
 
 @app.command("seed-scenarios")
-def seed_scenarios() -> None:
-    """Copy the default stress scenarios into the data root (existing files are kept)."""
-    from reactive_lob_sim.scenarios.library import seed_library
+def seed_scenarios(
+    refresh: Annotated[
+        bool, typer.Option(help="Also rewrite default scenario files that differ from the shipped defaults")
+    ] = False,
+) -> None:
+    """Copy the default stress scenarios into the data root, then validate every file there."""
+    from reactive_lob_sim.scenarios.library import seed_library, validate_library
 
     settings = _settings()
-    written = seed_library(settings.scenarios_dir)
+    written = seed_library(settings.scenarios_dir, refresh=refresh)
     typer.echo(f"{len(written)} scenario file(s) written to {settings.scenarios_dir}")
+    errors = validate_library(settings.scenarios_dir)
+    for path, error in errors.items():
+        typer.echo(f"invalid: {path}: {error}", err=True)
+    if errors:
+        raise typer.Exit(code=1)
 
 
 @app.command()
