@@ -1,5 +1,25 @@
 # Measuring the sim-to-real gap: evidence for the Reactive LOB Simulator
 
+> **Update 2026-11-06 (MOEX world).** `make report` was rerun after the MOEX adaptation (SBER-like prices,
+> 10-share lots, 0.25% commission, crypto module off). The method below is unchanged, but the numbers in the
+> sections that follow are from the v0.1 crypto run of 2026-10-22. The current numbers are:
+>
+> **E1 gap score (MOEX world)**
+> 
+> | rank | simulator | G | 95% CI | P(best) | rho pnl (CI) | rho fill rate (CI) | rho slippage (CI) | NMAE pnl (CI) |
+> |---|---|---|---|---|---|---|---|---|
+> | 1 | replay | 0.133 | 0.090 to 0.223 | 1.00 | 0.93 (0.80 to 0.98) | 0.96 (0.85 to 1.00) | 0.73 (0.37 to 0.92) | 0.38 (0.24 to 0.62) |
+> | 2 | hawkes_abm | 0.328 | 0.243 to 0.503 | 0.00 | 0.60 (0.24 to 0.81) | 0.97 (0.88 to 1.00) | 0.75 (0.37 to 0.92) | 1.05 (0.69 to 1.64) |
+> | 3 | zero_intelligence | 0.483 | 0.391 to 0.705 | 0.00 | 0.32 (-0.09 to 0.67) | 0.92 (0.73 to 0.99) | 0.77 (0.40 to 0.92) | 1.36 (1.02 to 1.99) |
+> | 4 | generative | 0.523 | 0.438 to 0.746 | 0.00 | 0.09 (-0.34 to 0.49) | 0.82 (0.44 to 0.96) | 0.64 (0.03 to 0.89) | 1.38 (1.08 to 1.89) |
+> 
+> Units: 24 (strategy, episode) pairs.
+>
+> E2: excess kurtosis of 1 s returns 4.27 (kappa 0) to 10.21 (kappa 4), Spearman rho 0.639 (p < 0.0001, n = 40).
+> Calibrated kappa 0.000 against a true 1.0. E3: Numba kernel 81.8 million events/s, 177 times the
+> pure-Python book. The full tables are in `$TRADEQ_DATA_DIR/reactive-lob-sim/reports/tables.md`.
+
+
 The present report gives the evidence for the model choices of the Reactive LOB Simulator, which is project S3
 of the Tradeq platform. All numbers come from the command make report, which runs the command sim report with
 fixed seeds and writes the files tables.md, study.json, kappa_sweep.json and engine_speed.json under the

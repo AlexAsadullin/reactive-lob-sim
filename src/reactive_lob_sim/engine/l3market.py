@@ -1,8 +1,13 @@
 """Shared machinery of the simulators that run on the L3 matching engine (ABM, generative, ground truth).
 
-It owns the order book, records the I1 tape, keeps the impact state, and books the experimental agent's
-orders and fills. Subclasses supply the background order flow by implementing :meth:`_next_event_time` and
-:meth:`_process_next_event`.
+It owns the order book, records the I1 tape, keeps the impact state, enforces the exchange rules (whole lots,
+price tick, daily price band, trading phase) and books the experimental agent's orders and fills. Subclasses
+supply the background order flow by implementing :meth:`_next_event_time` and :meth:`_process_next_event`.
+
+Trading phases (:class:`~reactive_lob_sim.moex.sessions.Phase`): in ``continuous`` orders match; in an
+auction they are collected (a market order becomes a limit at its band edge, the MOEX treatment of market
+orders in an auction) and :meth:`L3Market.set_phase` uncrosses the book when the auction ends; in ``halted``,
+``break`` and ``closed`` new orders are rejected and cancels are allowed.
 """
 
 from __future__ import annotations
@@ -15,18 +20,23 @@ from dataclasses import dataclass
 import numpy as np
 
 from reactive_lob_sim.engine.accounting import FeeSchedule
+from reactive_lob_sim.engine.auction import equilibrium
 from reactive_lob_sim.engine.book import OrderBook
+from reactive_lob_sim.engine.rules import TradingRules
 from reactive_lob_sim.engine.types import (
+    Fill,
     Liquidity,
     OrderRequest,
     OrderStatus,
     OrderType,
     Owner,
+    RejectReason,
     Side,
     SubmitResult,
     TimeInForce,
 )
 from reactive_lob_sim.impact.model import ImpactState
+from reactive_lob_sim.moex.sessions import SESSION_CODES, STATUS_CODES, Phase
 from reactive_lob_sim.params import ImpactParams, InitialBook, LiquidityParams
 from reactive_lob_sim.tape.tape import Tape, TapeRecorder
 from reactive_lob_sim.venue import AgentFill, MarketView, OrderAck
@@ -83,16 +93,20 @@ class L3Market(abc.ABC):
 
     def __init__(
         self,
-        tick_size: float,
-        lot_size: float,
+        rules: TradingRules,
         qty_tolerance: float,
         fees: FeeSchedule,
         impact: ImpactParams | None,
         recorder: TapeRecorder | None,
     ) -> None:
-        self._tick = tick_size
-        self._lot = lot_size
+        self.rules = rules
+        self._tick = rules.tick
+        self._lot = rules.lot
         self.book = OrderBook(qty_tolerance)
+        self.phase = Phase.CONTINUOUS
+        self.session: str | None = "main"
+        self.n_uncrosses = 0
+        self.auction_volume = 0.0
         self._fees = fees
         self.impact_params = impact
         self.impact = ImpactState(impact) if impact is not None else None
@@ -142,6 +156,8 @@ class L3Market(abc.ABC):
             funding_rate=self.funding_rate,
             open_interest=self.open_interest,
             tick_size=self._tick,
+            lot_size=self._lot,
+            phase=self.phase.value,
         )
 
     def submit(
@@ -152,7 +168,12 @@ class L3Market(abc.ABC):
         price: float | None = None,
         tif: TimeInForce = TimeInForce.GTC,
     ) -> OrderAck:
-        tick = None if price is None else round(price / self._tick)
+        reason = self.rules.check(qty, price)
+        if reason is None and not self.phase.accepts_orders:
+            reason = RejectReason.TRADING_HALTED
+        if reason is not None:
+            return OrderAck(0, OrderStatus.REJECTED, reason, 0.0)
+        tick = None if price is None else self.rules.to_tick(price)
         mid = self.mid_price()
         arrival = mid if mid is not None else (price or 0.0)
         touch = self.book.best(side)
@@ -160,7 +181,7 @@ class L3Market(abc.ABC):
             distance = side.sign * (touch - tick) * self._tick / arrival * _BPS
         else:
             distance = 0.0
-        req = OrderRequest(Owner.EXPERIMENT, side, order_type, self.round_qty(qty), tick, tif)
+        req = OrderRequest(Owner.EXPERIMENT, side, order_type, qty, tick, tif)
         result = self.execute(req)
         if result.status is not OrderStatus.REJECTED:
             meta = _OrderMeta(side, order_type, self._t, arrival, distance, result.queue_ahead)
@@ -194,7 +215,7 @@ class L3Market(abc.ABC):
         return None if mid is None else mid * self._tick
 
     def round_qty(self, qty: float) -> float:
-        return max(round(qty / self._lot), 1) * self._lot
+        return self.rules.round_qty(qty)
 
     def pool(self, owner: int, side: Side) -> IdPool:
         key = (owner, side)
@@ -214,10 +235,83 @@ class L3Market(abc.ABC):
             self._mid_v.append(mid)
 
     def execute(self, req: OrderRequest) -> SubmitResult:
-        """Submit an order of any owner, record its tape footprint and feed the impact state."""
+        """Submit an order of any owner under the trading rules, record its tape footprint and feed the
+        impact state."""
+        if not self.phase.accepts_orders:
+            return SubmitResult(0, OrderStatus.REJECTED, (), 0.0, RejectReason.TRADING_HALTED, 0.0, ())
+        if req.order_type is OrderType.LIMIT and req.price_tick is not None:
+            if not self.rules.in_band(req.price_tick):
+                return SubmitResult(0, OrderStatus.REJECTED, (), 0.0, RejectReason.PRICE_OUT_OF_BAND, 0.0, ())
+        elif req.order_type is OrderType.MARKET:
+            cap = self.rules.protection_tick(req.side is Side.BUY)
+            if self.phase.is_auction:
+                if cap is None:
+                    return SubmitResult(
+                        0, OrderStatus.REJECTED, (), 0.0, RejectReason.NOT_ALLOWED_IN_PHASE, 0.0, ()
+                    )
+                req = OrderRequest(req.owner, req.side, OrderType.LIMIT, req.qty, cap, TimeInForce.GTC)
+            elif cap is not None:
+                req = OrderRequest(req.owner, req.side, req.order_type, req.qty, cap, req.tif)
         result = self.book.submit(req)
         self._after_submit(req, result)
         return result
+
+    # ------------------------------------------------------------------ trading phases
+    def set_phase(self, phase: Phase, session: str | None = None) -> list[Fill]:
+        """Move to ``phase``. Leaving an auction uncrosses the book first; the uncross fills are returned."""
+        fills: list[Fill] = []
+        if phase is self.phase and session == self.session:
+            return fills
+        if self.phase.is_auction and not phase.is_auction:
+            fills = self.uncross()
+        self.phase = phase
+        self.session = session
+        self.book.matching = not phase.is_auction
+        if self._recorder is not None:
+            self._recorder.trading_status(
+                self._t, STATUS_CODES[phase], phase.accepts_orders, phase is Phase.CONTINUOUS
+            )
+            self._recorder.trading_session = SESSION_CODES.get(session) if session else None
+        return fills
+
+    def auction_reference_tick(self) -> float | None:
+        """Reference price of the uncross tie-break: the last trade, else the mid of the collected book."""
+        if self.last_trade_tick is not None:
+            return float(self.last_trade_tick)
+        bid, ask = self.book.best_bid(), self.book.best_ask()
+        if bid is None or ask is None:
+            return None
+        return (bid + ask) / 2.0
+
+    def uncross(self) -> list[Fill]:
+        """Execute the crossed part of the collected book at the equilibrium price."""
+        bids, asks = self.book.levels(Side.BUY), self.book.levels(Side.SELL)
+        eq = equilibrium(bids, asks, self.auction_reference_tick())
+        self.book.matching = True
+        if eq is None:
+            return []
+        before = [(Side.BUY, t) for t, _ in bids if t >= eq.price_tick]
+        before += [(Side.SELL, t) for t, _ in asks if t <= eq.price_tick]
+        fills = self.book.uncross(eq.price_tick)
+        for fill in fills:
+            if self._recorder is not None:
+                self._recorder.trade(self._t, fill.price_tick, fill.qty, fill.taker_side)
+            for oid, owner, side in (
+                (fill.maker_order_id, fill.maker_owner, fill.taker_side.opposite),
+                (fill.taker_order_id, fill.taker_owner, fill.taker_side),
+            ):
+                if self.book.order(oid) is None:
+                    self.pool(owner, side).discard(oid)
+                if owner == Owner.EXPERIMENT:
+                    liquidity = Liquidity.MAKER if oid == fill.maker_order_id else Liquidity.TAKER
+                    self._book_agent_fill(oid, fill.price_tick, fill.qty, liquidity)
+        if fills:
+            self.last_trade_tick = eq.price_tick
+            self.n_uncrosses += 1
+            self.auction_volume += sum(f.qty for f in fills)
+        self._record_levels(tuple(before))
+        self.note_mid()
+        return fills
 
     def cancel_background(self, order_id: int) -> bool:
         order = self.book.order(order_id)
@@ -307,6 +401,14 @@ class L3Market(abc.ABC):
         return float(math.exp(log_mean + log_sd * rng.standard_normal()))
 
     # ------------------------------------------------------------------ liquidity helpers
+    @staticmethod
+    def raw_quote_tick(side: Side, ref_tick: float, offset: int) -> int:
+        """Quote ``offset`` ticks away from the reference without looking at the touch (auctions: the
+        collected book may cross, and the uncross resolves it)."""
+        if side is Side.BUY:
+            return math.floor(ref_tick - 0.5) - offset
+        return math.ceil(ref_tick + 0.5) + offset
+
     def quote_tick(self, side: Side, ref_tick: float, offset: int) -> int:
         """Quote ``offset`` ticks away from the reference, never crossing the opposite touch."""
         if side is Side.BUY:

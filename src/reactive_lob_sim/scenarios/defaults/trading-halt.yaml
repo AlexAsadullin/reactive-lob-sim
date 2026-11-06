@@ -1,0 +1,11 @@
+schema_version: "1"
+id: trading-halt
+description: >-
+  A 120 s trading halt (MOEX suspends a security after a limit move or news) that reopens with a discrete
+  auction; the value jumps 150 bps while trading is suspended.
+default_duration_s: 400
+shocks:
+  - kind: trading_halt
+    start_s: 100
+    duration_s: 120
+    params: {reopen_auction: 1.0, jump_bps: -150.0}

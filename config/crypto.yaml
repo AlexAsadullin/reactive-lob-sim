@@ -1,0 +1,23 @@
+# Optional crypto module (perpetual swaps), off by default. To use it, copy these keys into
+# abm.crypto of a settings file (and set market.symbol to a perp, fees to the venue's bps).
+crypto:
+  funding_flow_sensitivity: 0.1
+  funding_scale: 0.0005
+  liquidation:
+    enabled: true
+    leverages: [20.0, 50.0, 100.0]
+    maintenance_margin: 0.004
+    crowding_sensitivity: 0.3
+    funding_scale: 0.0005
+    oi_fraction_at_risk: 0.02
+    refresh_interval_s: 10.0
+    max_positions: 60
+  macro:
+    funding_interval_s: 60.0
+    funding_base: 0.0001
+    funding_premium_coeff: 0.5
+    funding_noise_sd: 0.0001
+    funding_clip: 0.0075
+    oi_initial: 5000.0
+    oi_reversion_per_s: 0.001
+    oi_vol_per_sqrt_s: 0.002

@@ -1,7 +1,8 @@
 """Value types shared by the matching engine and its callers.
 
 Prices inside the engine are integer ticks, so price comparisons and level keys are exact. Quantities are
-float64 in base units; the book treats anything at or below ``qty_tolerance`` as zero.
+float64 in shares (whole lots are enforced by :mod:`reactive_lob_sim.engine.rules`); the book treats anything
+at or below ``qty_tolerance`` as zero.
 """
 
 from __future__ import annotations
@@ -59,6 +60,9 @@ class RejectReason(StrEnum):
     FOK_INSUFFICIENT_LIQUIDITY = "fok_insufficient_liquidity"
     NO_LIQUIDITY = "no_liquidity"
     UNKNOWN_ORDER = "unknown_order"
+    PRICE_OUT_OF_BAND = "price_out_of_band"
+    TRADING_HALTED = "trading_halted"
+    NOT_ALLOWED_IN_PHASE = "not_allowed_in_phase"
 
 
 class Liquidity(StrEnum):
@@ -76,10 +80,14 @@ class Owner(IntEnum):
     MOMENTUM = 5
     LIQUIDATION = 6
     GENERATIVE = 7
+    AUCTION = 8  # scenario order flow collected in an auction (e.g. opening-auction imbalance)
 
 
 @dataclass(frozen=True, slots=True)
 class OrderRequest:
+    """An order. For a market order ``price_tick`` is an optional protection price (the worst price it may
+    trade at, e.g. the price-band edge); ``None`` means unlimited."""
+
     owner: int
     side: Side
     order_type: OrderType

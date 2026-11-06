@@ -81,6 +81,34 @@ class FeeSettings(_Section):
     taker_bps: float
 
 
+class InstrumentsSettings(_Section):
+    """MOEX instruments; see :mod:`reactive_lob_sim.moex.instruments`. File paths are under the data root."""
+
+    commission_bps: float = Field(ge=0)
+    zero_fee_commission_bps: float = Field(ge=0)
+    universe_file: str | None = None
+    zero_fee_file: str | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    symbols: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class SessionWindowSettings(_Section):
+    session: str
+    phase: str
+    start: str
+    end: str
+
+
+class SessionsSettings(_Section):
+    """MOEX trading day; ``apply`` makes simulated runs follow it from ``market.epoch``."""
+
+    apply: bool = False
+    utc_offset_h: float = 3.0
+    weekend_enabled: bool = True
+    weekday: list[SessionWindowSettings] = Field(default_factory=list)
+    weekend: list[SessionWindowSettings] = Field(default_factory=list)
+
+
 class ReplaySettings(_Section):
     queue_model: Literal["risk_averse", "proportional"]
 
@@ -215,6 +243,8 @@ class Settings(BaseSettings):
     contracts: ContractSettings
     market: MarketSettings
     fees: FeeSettings
+    instruments: InstrumentsSettings
+    sessions: SessionsSettings = Field(default_factory=SessionsSettings)
     replay: ReplaySettings
     abm: ABMParams
     calibration: CalibrationSettings

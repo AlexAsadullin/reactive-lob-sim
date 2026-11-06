@@ -26,6 +26,8 @@ class MarketView:
     funding_rate: float
     open_interest: float
     tick_size: float
+    lot_size: float = 1.0
+    phase: str = "continuous"
 
     @property
     def mid(self) -> float | None:

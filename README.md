@@ -1,13 +1,19 @@
 # Reactive LOB Simulator (S3)
 
-A reactive simulator of a crypto limit order book (LOB) with an explicit, calibrated impact coupling kappa,
-which sets how strongly simulated order flow reacts to an agent's trades. The project also computes a
-sim-to-real gap score G: it runs one strategy set in each simulator and on the real tape, and it measures how
-well each simulator predicts the real profit and loss (PnL), fill rate and slippage (0 is perfect). On
-synthetic data, tape replay scored G = 0.115 (95% CI 0.075 to 0.191, 24 strategy-episode units), and the
-reactive simulators scored 0.285 to 0.383. Raising kappa from 0 to 4 raised the excess kurtosis of 1-second
-returns from 5.83 to 20.52 (Spearman rho 0.62, p < 0.0001, 40 runs). Details are in
-[docs/report.md](docs/report.md).
+A reactive simulator of a Moscow Exchange (MOEX) share's limit order book (LOB). It has an explicit,
+calibrated impact coupling kappa, which sets how strongly simulated order flow reacts to an agent's trades. The
+simulator models MOEX microstructure: orders in whole lots, a price tick per security, daily price bands, call
+auctions (opening, closing, and discrete auctions after halts), trading halts, the morning, main, evening and
+weekend sessions, and the T-Invest commission (0.25% per fill, 0% for T-Capital funds). The project also
+computes a sim-to-real gap score G: it runs one strategy set in each simulator and on the real tape, and
+measures how well each simulator predicts the real profit and loss (PnL), fill rate and slippage (0 is
+perfect). On the synthetic MOEX world (SBER-like, 10-share lots), tape replay scored G = 0.133 (95% CI 0.090 to
+0.223, 24 strategy-episode units) and the reactive simulators 0.328 to 0.523. Raising kappa from 0 to 4 raised
+the excess kurtosis of 1-second returns from 4.27 to 10.21 (Spearman rho 0.64, p < 0.0001, 40 runs). Details
+are in [docs/report.md](docs/report.md).
+
+The v0.1 crypto features (perpetual funding, open interest, liquidation cascades) are kept as an optional
+module that is off by default (`abm.crypto: null`, see `config/crypto.yaml`).
 
 Specification: `quant_platform_plan_full.md`, section "S3. Generative and agent-based market simulation".
 
@@ -32,9 +38,13 @@ nested delimiter `__`, for example `SIM_FEES__TAKER_BPS=4.5`. `TRADEQ_DATA_DIR` 
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `market.symbol` | SBER-RUB-TQBR | default instrument; lot, tick and band come from `instruments.symbols` |
+| `instruments.commission_bps` | 25 | T-Invest basic tariff, maker and taker alike; T-Capital funds pay `zero_fee_commission_bps` (0) |
+| `instruments.universe_file` | I1 `reference/universe_moex.json` | lot and tick per security (wins over settings; optional) |
+| `sessions.apply` | false | follow the MOEX trading day from `market.epoch` (auctions uncross at their end) |
+| `abm.crypto` | null | the optional crypto module; `config/crypto.yaml` holds its parameters |
 | `abm.impact.kappa` | 1.0 | impact coupling used when no calibration file exists for a symbol |
 | `calibration.impact.kappa_grid` | 0 to 3 | grid of the probe-metaorder search for kappa |
-| `contracts.pit_enabled` | false | read funding and open interest from I2 instead of the tape |
 | `replay.queue_model` | proportional | whether cancels (not only trades) advance a resting order's queue |
 | `gap.bootstrap_samples` | 1000 | bootstrap resamples behind the gap-score intervals |
 | `reproduce.*`, `report.*` | see file | ground-truth market, episodes, seeds and report experiments |
@@ -43,14 +53,17 @@ nested delimiter `__`, for example `SIM_FEES__TAKER_BPS=4.5`. `TRADEQ_DATA_DIR` 
 
 ```
 I1 tape --> calibration (events, Hawkes MLE, square-root law + propagator, kappa probe) --> impact.json, abm.json
-calibration --> simulators: replay | zero-intelligence | Hawkes ABM (+ liquidations, funding, OI) | GRU generator
-                all simulators share the L3 price-time matching engine (engine/)
+calibration --> simulators: replay | zero-intelligence | Hawkes ABM | GRU generator (+ optional crypto module)
+                all simulators share the L3 price-time matching engine (engine/) with MOEX rules and auctions
 strategies (market making, momentum, TWAP) x simulators  +  I6 fills (live)  --> gap score G, realism scores
 ```
 
 `engine/` is the L3 book with limit, market, cancel, modify, IOC, FOK and post-only orders and maker and taker
-fees, plus a Numba batch kernel for exogenous order streams. `abm/` is the agent-based market (ABM) with noise,
-fundamental and momentum traders, a liquidation-cascade agent and a funding and open-interest (OI) model.
+fees, plus a Numba batch kernel for exogenous order streams. `engine/rules.py` enforces whole lots, the tick
+grid and the price band; `engine/auction.py` is the uncross (maximum volume, then minimum surplus, then
+closest to the reference price). `moex/` holds the instrument registry (lot, tick, band, zero-fee funds) and
+the session schedule. `abm/` is the agent-based market (ABM) with noise, fundamental and momentum traders and
+phase-dependent flow; `crypto/` is the optional liquidation-cascade agent and funding and open-interest model.
 `hawkes/` fits and simulates the multivariate Hawkes order flow. `generative/` is a small conditional GRU over
 tokenised order events. `gap/` and `realism/` hold the gap score, the stylised facts and the LOB-Bench-style
 Wasserstein and Kolmogorov-Smirnov distances. `simctx.py` is the only place that builds simulators, and
@@ -112,27 +125,35 @@ over one; the S3 market fixes funding every 60 s, where the shock is paid five t
 
 ## Key results
 
-Synthetic data only (a hidden ground-truth ABM with two volatility regimes); see
-[docs/report.md](docs/report.md) for the methods and all intervals.
+Synthetic data (a hidden ground-truth ABM with two volatility regimes, in the MOEX world: SBER-like prices,
+10-share lots, 0.25% commission), rerun on 2026-11-06; see [docs/report.md](docs/report.md) for the methods.
 
 | Result | Value (95% CI) | Sample |
 |---|---|---|
-| Gap score G, tape replay | 0.115 (0.075 to 0.191) | 24 units, 1000 bootstrap resamples |
-| Gap score G, Hawkes ABM / zero-intelligence / GRU | 0.383 (0.240 to 0.511) / 0.335 (0.264 to 0.449) / 0.285 (0.233 to 0.391) | 24 units |
-| Excess kurtosis of 1 s returns, kappa 0 vs 4 | 5.83 (3.99 to 7.67) vs 20.52 (6.45 to 34.59) | 8 seeds of 600 s each |
-| Calibrated kappa vs true kappa | 1.32 vs 1.0 | 1 calibration tape of 1800 s |
-| Numba kernel vs pure-Python book | 70.3 million vs 0.42 million events/s (168 times) | 20000 events, 5 repeats |
+| Gap score G, tape replay | 0.133 (0.090 to 0.223) | 24 units, 1000 bootstrap resamples |
+| Gap score G, Hawkes ABM / zero-intelligence / GRU | 0.328 (0.243 to 0.503) / 0.483 (0.391 to 0.705) / 0.523 (0.438 to 0.746) | 24 units |
+| Excess kurtosis of 1 s returns, kappa 0 vs 4 | 4.27 (3.36 to 5.18) vs 10.21 (7.68 to 12.74) | 8 seeds of 600 s each |
+| Calibrated kappa vs true kappa | 0.0 vs 1.0 | 1 calibration tape of 1800 s |
+| Numba kernel vs pure-Python book | 81.8 million vs 0.46 million events/s (177 times) | 20000 events, 5 repeats |
+
+Real data: the 2-minute T-Bank capture of SBER (2026-11-05) holds 48 order-flow events, below the 200 that
+calibration needs (`sim calibrate --venue moex-tbank --symbol SBER-RUB-TQBR ...` refuses it), so no simulator
+is calibrated on real MOEX tape yet.
 
 ## Limitations
 
 The evidence is synthetic, and the ground truth belongs to the same model family as the Hawkes ABM. The
-24-unit gap score cannot order the three reactive simulators, whose intervals overlap. The square-root-law
-exponent hit its upper bound of 1.0 on the calibration tape, so kappa came out at 1.32 against a true 1.0.
-The GRU generator produces a book about three times deeper than the real one and is experimental.
+24-unit gap score orders replay first but cannot separate the reactive simulators reliably. In the MOEX world
+the kappa probe returned 0 against a true 1.0: with 10-share lots and a 0.25% commission the probe metaorder's
+footprint is coarse, so the calibration needs a longer tape or finer probes. Auction price determination
+follows the generic equilibrium rule (MOEX trading rules); MOEX's exact tie-breaks and the closing-price
+algorithm are not reproduced. Price bands are a fixed fraction (20%) around the episode's start price, not the
+exchange's published limits. During a halt that reopens with an auction the simulator collects orders, while
+MOEX rejects them until the reopening auction starts.
 
 ## Roadmap
 
-1. Run the gap score on real I1 tape and I6 shadow fills, with more episodes, so that the reactive simulators
-   can be ordered.
+1. Calibrate on a full trading day of T-Bank tape (order books and trades) and run the gap score on real I1
+   tape and I6 shadow fills, with more episodes, so that the reactive simulators can be ordered.
 2. Bound the error of the kappa calibration (bootstrap over calibration windows) and fit delta with a prior.
 3. A LOB-Bench-format export, so that the published LOB-Bench code can score the synthetic tapes directly.

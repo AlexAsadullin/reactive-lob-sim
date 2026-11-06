@@ -42,7 +42,7 @@ def seed_scenarios(
 @app.command()
 def calibrate(
     venue: Annotated[str, typer.Option(help="Venue of the I1 tape")],
-    symbol: Annotated[str, typer.Option(help="Normalised symbol, e.g. BTC-USDT-PERP")],
+    symbol: Annotated[str, typer.Option(help="Normalised symbol, e.g. SBER-RUB-TQBR")],
     start: Annotated[str, typer.Option(help="Sample start, ISO-8601 UTC")],
     end: Annotated[str, typer.Option(help="Sample end, ISO-8601 UTC")],
     seed: Annotated[int, typer.Option(help="Seed of the coupling probe runs")] = 0,

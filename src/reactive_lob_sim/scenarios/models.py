@@ -1,12 +1,27 @@
 """Counterfactual stress scenarios (contract 6.5 scenario library).
 
 A scenario is a list of timed shocks applied to the agent-based market. Each shock kind has a fixed set of
-parameters:
+parameters (all required, all numbers):
 
 spread_widening: ``extra_ticks`` added to the minimum quote offset of liquidity providers, and resting
 liquidity inside the widened band is pulled at the shock start.
 liquidity_withdrawal: ``rate_factor`` (0..1) thins limit-order arrivals, and ``cancel_fraction`` of resting
 liquidity is cancelled at the shock start.
+opening_auction_imbalance (MOEX): the market is in a call auction for the shock duration and uncrosses at its
+end. At the start, extra orders of ``depth_multiple`` times the visible opposite depth times ``|imbalance|``
+are added on the buy side (``imbalance > 0``) or the sell side (``< 0``), with limit prices spread evenly
+from the opposite touch to ``price_range_bps`` beyond it.
+dividend_gap (MOEX): at the start the fundamental value drops by ``dividend_bps`` (the ex-dividend gap, T+1
+settlement), every resting liquidity quote is pulled, and the market reopens through a call auction lasting
+the shock duration.
+key_rate_surprise (MOEX): a Bank of Russia key-rate surprise of ``surprise_bp`` basis points moves the
+fundamental value by ``surprise_bp * bps_per_bp`` basis points at the start, ``cancel_fraction`` of resting
+liquidity is pulled, and the fundamental volatility is multiplied by ``vol_multiplier`` for the duration.
+trading_halt (MOEX): no orders are accepted for the duration and the fundamental value jumps by
+``jump_bps`` at the start; with ``reopen_auction`` = 1 the halt collects orders as a discrete auction and
+reopens through an uncross, with 0 it rejects orders and reopens straight into continuous trading.
+
+Crypto module only (rejected by a market without it):
 liquidation_cascade: ``oi_multiplier`` scales open interest and ``long_share`` forces long crowding; the
 crowded longs at risk are placed in ``layers`` layers whose liquidation prices sit ``layer_gap_bps`` apart
 below the mid, and a forced sell of ``trigger_depth_fraction`` of the visible bid depth starts the cascade.
@@ -26,16 +41,32 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ShockKind = Literal["spread_widening", "liquidity_withdrawal", "liquidation_cascade", "funding_shock"]
+ShockKind = Literal[
+    "spread_widening",
+    "liquidity_withdrawal",
+    "opening_auction_imbalance",
+    "dividend_gap",
+    "key_rate_surprise",
+    "trading_halt",
+    "liquidation_cascade",
+    "funding_shock",
+]
 
 REQUIRED_PARAMS: dict[str, frozenset[str]] = {
     "spread_widening": frozenset({"extra_ticks"}),
     "liquidity_withdrawal": frozenset({"rate_factor", "cancel_fraction"}),
+    "opening_auction_imbalance": frozenset({"imbalance", "depth_multiple", "price_range_bps"}),
+    "dividend_gap": frozenset({"dividend_bps"}),
+    "key_rate_surprise": frozenset({"surprise_bp", "bps_per_bp", "vol_multiplier", "cancel_fraction"}),
+    "trading_halt": frozenset({"reopen_auction", "jump_bps"}),
     "liquidation_cascade": frozenset(
         {"oi_multiplier", "long_share", "trigger_depth_fraction", "layers", "layer_gap_bps"}
     ),
     "funding_shock": frozenset({"rate"}),
 }
+CRYPTO_KINDS: frozenset[str] = frozenset({"liquidation_cascade", "funding_shock"})
+# Shock kinds that put the market into a non-continuous trading phase for their duration.
+PHASE_KINDS: frozenset[str] = frozenset({"opening_auction_imbalance", "dividend_gap", "trading_halt"})
 
 
 class Shock(BaseModel):
@@ -51,6 +82,16 @@ class Shock(BaseModel):
         missing = REQUIRED_PARAMS[self.kind] - set(self.params)
         if missing:
             raise ValueError(f"shock {self.kind} is missing params: {sorted(missing)}")
+        p = self.params
+        if self.kind == "opening_auction_imbalance" and not -1.0 <= p["imbalance"] <= 1.0:
+            raise ValueError("imbalance must lie in [-1, 1]")
+        if self.kind == "trading_halt" and p["reopen_auction"] not in (0.0, 1.0):
+            raise ValueError("reopen_auction must be 0 or 1")
+        if self.kind == "key_rate_surprise" and p["vol_multiplier"] <= 0:
+            raise ValueError("vol_multiplier must be positive")
+        for key in ("cancel_fraction", "rate_factor"):
+            if key in p and not 0.0 <= p[key] <= 1.0:
+                raise ValueError(f"{key} must lie in [0, 1]")
         return self
 
     def active(self, t: float) -> bool:
@@ -101,6 +142,10 @@ class Scenario(BaseModel):
                 del doc[key]
         return doc
 
+    @property
+    def needs_crypto(self) -> bool:
+        return any(s.kind in CRYPTO_KINDS for s in self.shocks)
+
 
 class ShockSchedule:
     """Time queries over a scenario's shocks, used by the simulators."""
@@ -132,6 +177,15 @@ class ShockSchedule:
     def funding_override(self, t: float) -> float | None:
         active = self._active("funding_shock", t)
         return active[-1].params["rate"] if active else None
+
+    def vol_multiplier(self, t: float) -> float:
+        factor = 1.0
+        for s in self._active("key_rate_surprise", t):
+            factor *= s.params["vol_multiplier"]
+        return factor
+
+    def phase_shocks(self) -> list[Shock]:
+        return [s for s in self._shocks if s.kind in PHASE_KINDS]
 
     def long_share_override(self, t: float) -> float | None:
         active = self._active("liquidation_cascade", t)

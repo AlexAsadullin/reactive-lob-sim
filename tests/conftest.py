@@ -30,3 +30,27 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
 @pytest.fixture
 def ctx(settings: Settings) -> SimContext:
     return SimContext.from_settings(settings)
+
+
+CRYPTO_FILE = Path(__file__).resolve().parents[1] / "config" / "crypto.yaml"
+
+
+@pytest.fixture
+def crypto_settings(settings: Settings) -> Settings:
+    """The optional crypto module switched on (perp symbol, fractional lots, funding and liquidations)."""
+    import yaml
+
+    from reactive_lob_sim.params import CryptoParams
+
+    crypto = CryptoParams.model_validate(yaml.safe_load(CRYPTO_FILE.read_text())["crypto"])
+    return with_updates(
+        settings,
+        abm={"crypto": crypto, "initial_price": 100.0},
+        market={"symbol": "SYN-USDT-PERP", "lot_size": 0.001},
+        fees={"maker_bps": 1.0, "taker_bps": 4.0},
+    )
+
+
+@pytest.fixture
+def crypto_ctx(crypto_settings: Settings) -> SimContext:
+    return SimContext.from_settings(crypto_settings)

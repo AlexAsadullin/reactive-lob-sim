@@ -121,7 +121,13 @@ def fit_tokenizer(
     size_q = np.quantile(sizes, np.linspace(0, 1, cfg.n_size_bins + 1))
     size_edges = np.unique(size_q[1:-1])
     which = np.searchsorted(size_edges, sizes, side="right")
-    size_values = np.asarray([np.median(sizes[which == b]) for b in range(size_edges.size + 1)])
+    # Sizes in whole lots are discrete, so a quantile bin can be empty: it takes the nearest filled bin.
+    medians = [
+        float(np.median(sizes[which == b])) if np.any(which == b) else np.nan
+        for b in range(size_edges.size + 1)
+    ]
+    filled = [i for i, v in enumerate(medians) if not np.isnan(v)]
+    size_values = np.asarray([medians[min(filled, key=lambda i: abs(i - b))] for b in range(len(medians))])
     dts = np.diff(np.concatenate([[0.0], events.t]))
     logs = np.log(np.maximum(dts, cfg.dt_floor_s))
     dt_edges = np.unique(np.quantile(logs, np.linspace(0, 1, cfg.n_dt_bins + 1)))

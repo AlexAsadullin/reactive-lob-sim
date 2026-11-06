@@ -1,4 +1,8 @@
-"""Arrow schemas of the I1 normalised tape (contract 6.2)."""
+"""Arrow schemas of the I1 normalised tape (contract 6.2 revision 2, MOEX).
+
+The crypto channels (funding, liquidations, open interest) stay readable, as the contract requires, but the
+MOEX path never writes them.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,16 @@ BOOK_SNAPSHOT = "book_snapshot"
 FUNDING = "funding"
 LIQUIDATIONS = "liquidations"
 OPEN_INTEREST = "open_interest"
-CHANNELS: tuple[str, ...] = (TRADES, BOOK_DELTA, BOOK_SNAPSHOT, FUNDING, LIQUIDATIONS, OPEN_INTEREST)
+TRADING_STATUS = "trading_status"
+CHANNELS: tuple[str, ...] = (
+    TRADES,
+    BOOK_DELTA,
+    BOOK_SNAPSHOT,
+    TRADING_STATUS,
+    FUNDING,
+    LIQUIDATIONS,
+    OPEN_INTEREST,
+)
 
 _COMMON: list[tuple[str, pa.DataType]] = [
     ("venue", pa.string()),
@@ -28,6 +41,12 @@ _SPECIFIC: dict[str, list[tuple[str, pa.DataType]]] = {
         ("price", pa.float64()),
         ("size", pa.float64()),
         ("side", pa.string()),
+        ("trading_session", pa.string()),
+    ],
+    TRADING_STATUS: [
+        ("status", pa.string()),
+        ("limit_order_allowed", pa.bool_()),
+        ("market_order_allowed", pa.bool_()),
     ],
     BOOK_DELTA: [
         ("side", pa.string()),

@@ -2,11 +2,13 @@
 
 They are deliberately simple; what matters for the gap score is that they stress different simulator
 properties: queue position and adverse selection (market maker), price dynamics and impact (momentum), and
-liquidity cost of a fixed-size execution (TWAP).
+liquidity cost of a fixed-size execution (TWAP). Sizes are configured in lots and sent in shares (lots times
+the lot size of the instrument), so every order is a whole number of lots.
 """
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
@@ -28,9 +30,9 @@ class _PositionTracker:
 
 @dataclass(frozen=True)
 class MarketMakerParams:
-    quote_size: float
+    quote_lots: float
     offset_ticks: int
-    max_inventory: float
+    max_inventory_lots: float
     requote_ticks: int
 
 
@@ -43,9 +45,11 @@ class MarketMaker(_PositionTracker):
         self.strategy_id = strategy_id
         self.p = p
         self._quotes: dict[Side, tuple[int, float]] = {}
+        self._lot = 1.0
 
     def on_start(self, view: MarketView, horizon: float) -> None:
         self._quotes.clear()
+        self._lot = view.lot_size
 
     def on_step(self, view: MarketView, gw: Gateway) -> None:
         if view.best_bid is None or view.best_ask is None:
@@ -61,7 +65,8 @@ class MarketMaker(_PositionTracker):
             if quote is not None and quote[0] not in live:
                 quote = None
                 del self._quotes[side]
-            allowed = side.sign * self.position + self.p.quote_size <= self.p.max_inventory
+            size = self.p.quote_lots * self._lot
+            allowed = side.sign * self.position + size <= self.p.max_inventory_lots * self._lot + 1e-9
             if quote is not None:
                 stale = abs(quote[1] - target) > self.p.requote_ticks * tick + tick / 2
                 if stale or not allowed:
@@ -69,7 +74,7 @@ class MarketMaker(_PositionTracker):
                     del self._quotes[side]
                     quote = None
             if quote is None and allowed:
-                ack = gw.submit(side, OrderType.LIMIT, self.p.quote_size, target, TimeInForce.POST_ONLY)
+                ack = gw.submit(side, OrderType.LIMIT, size, target, TimeInForce.POST_ONLY)
                 if ack.status in (OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED):
                     self._quotes[side] = (ack.order_id, target)
 
@@ -78,8 +83,8 @@ class MarketMaker(_PositionTracker):
 class MomentumParams:
     lookback_s: float
     threshold_bps: float
-    trade_size: float
-    max_position: float
+    trade_lots: float
+    max_position_lots: float
 
 
 class Momentum(_PositionTracker):
@@ -91,9 +96,11 @@ class Momentum(_PositionTracker):
         self.strategy_id = strategy_id
         self.p = p
         self._hist: deque[tuple[float, float]] = deque()
+        self._lot = 1.0
 
     def on_start(self, view: MarketView, horizon: float) -> None:
         self._hist.clear()
+        self._lot = view.lot_size
 
     def on_step(self, view: MarketView, gw: Gateway) -> None:
         mid = view.mid
@@ -106,29 +113,30 @@ class Momentum(_PositionTracker):
         if view.t - t0 < self.p.lookback_s - 1e-9:
             return
         ret_bps = (mid / m0 - 1.0) * _BPS
+        cap = self.p.max_position_lots * self._lot
         if ret_bps > self.p.threshold_bps:
-            target = self.p.max_position
+            target = cap
         elif ret_bps < -self.p.threshold_bps:
-            target = -self.p.max_position
+            target = -cap
         else:
             target = 0.0
         gap = target - self.position
         if abs(gap) < gw.lot_size / 2:
             return
         side = Side.BUY if gap > 0 else Side.SELL
-        gw.submit(side, OrderType.MARKET, min(abs(gap), self.p.trade_size))
+        gw.submit(side, OrderType.MARKET, min(abs(gap), self.p.trade_lots * self._lot))
 
 
 @dataclass(frozen=True)
 class TwapParams:
     side: Side
-    total_qty: float
+    total_lots: float
     style: str
     catchup_fraction: float
 
 
 class Twap(_PositionTracker):
-    """Executes ``total_qty`` evenly over the horizon.
+    """Executes ``total_lots`` evenly over the horizon, in whole lots.
 
     ``market`` style sends a market order for the shortfall against the linear schedule at each step.
     ``passive`` style keeps one post-only order at the touch for the shortfall, and switches to market
@@ -142,11 +150,13 @@ class Twap(_PositionTracker):
         self._t0 = 0.0
         self._horizon = 1.0
         self._order: int | None = None
+        self._lot = 1.0
 
     def on_start(self, view: MarketView, horizon: float) -> None:
         self._t0 = view.t
         self._horizon = horizon
         self._order = None
+        self._lot = view.lot_size
 
     @property
     def executed(self) -> float:
@@ -156,13 +166,15 @@ class Twap(_PositionTracker):
         if view.best_bid is None or view.best_ask is None:
             return
         frac = min((view.t - self._t0) / self._horizon, 1.0)
-        shortfall = self.p.total_qty * frac - self.executed
+        total = self.p.total_lots * self._lot
+        lots = math.floor((total * frac - self.executed) / self._lot + 1e-9)
         if self._order is not None and self._order in gw.open_orders():
             gw.cancel(self._order)
         self._order = None
-        if shortfall < gw.lot_size / 2:
+        if lots < 1:
             return
-        urgent = shortfall > self.p.total_qty * self.p.catchup_fraction or frac >= 1.0
+        shortfall = lots * self._lot
+        urgent = shortfall > total * self.p.catchup_fraction or frac >= 1.0
         if self.p.style == "market" or urgent:
             gw.submit(self.p.side, OrderType.MARKET, shortfall)
             return
@@ -178,9 +190,9 @@ def build_strategy(spec: StrategySpec) -> Strategy:
         return MarketMaker(
             spec.id,
             MarketMakerParams(
-                float(p["quote_size"]),
+                float(p["quote_lots"]),
                 int(p["offset_ticks"]),
-                float(p["max_inventory"]),
+                float(p["max_inventory_lots"]),
                 int(p["requote_ticks"]),
             ),
         )
@@ -190,13 +202,13 @@ def build_strategy(spec: StrategySpec) -> Strategy:
             MomentumParams(
                 float(p["lookback_s"]),
                 float(p["threshold_bps"]),
-                float(p["trade_size"]),
-                float(p["max_position"]),
+                float(p["trade_lots"]),
+                float(p["max_position_lots"]),
             ),
         )
     style = str(p["style"])
     if style not in ("market", "passive"):
         raise ValueError(f"unknown TWAP style {style!r}")
     return Twap(
-        spec.id, TwapParams(Side(str(p["side"])), float(p["total_qty"]), style, float(p["catchup_fraction"]))
+        spec.id, TwapParams(Side(str(p["side"])), float(p["total_lots"]), style, float(p["catchup_fraction"]))
     )

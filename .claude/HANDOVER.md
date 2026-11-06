@@ -1,7 +1,8 @@
 # HANDOVER: reactive-lob-sim (Tradeq S3)
 
-Last updated 2026-10-22 by the orchestrating session, from the transcript of the agent that stopped at the
-session rate limit.
+Last updated 2026-11-06 (MOEX adaptation). The sections from "Goal" to "Update 2026-10-23" describe the v0.1
+crypto build; the section "MOEX adaptation (2026-11-06)" at the end is the current state and wins where they
+differ.
 
 ## Goal
 
@@ -35,7 +36,9 @@ place that constructs the simulators. `service/app.py` is the sim-service.
 | Path | Purpose |
 |---|---|
 | src/reactive_lob_sim/engine/{book,fastbook,l3market,types,accounting}.py | L3 price-time book, Numba batch kernel, fees |
-| src/reactive_lob_sim/abm/{market,liquidation,macro}.py | Agent-based market, liquidation cascades, funding and open interest |
+| src/reactive_lob_sim/abm/market.py | Agent-based market with MOEX phases and scenarios |
+| src/reactive_lob_sim/crypto/{liquidation,macro}.py | Optional crypto module: liquidation cascades, funding and open interest |
+| src/reactive_lob_sim/engine/{rules,auction}.py, moex/{instruments,sessions}.py | Lots, tick, band; uncross; instrument registry and fees; session schedule |
 | src/reactive_lob_sim/hawkes/{kernels,mle}.py | Multivariate exponential Hawkes: maximum-likelihood fit and simulation |
 | src/reactive_lob_sim/generative/{tokenizer,model,market}.py | GRU order-flow model that drives the engine |
 | src/reactive_lob_sim/impact/{fit,model}.py | Propagator impact with square-root size dependence |
@@ -45,7 +48,7 @@ place that constructs the simulators. `service/app.py` is the sim-service.
 | src/reactive_lob_sim/scenarios/*.py | Counterfactual stress library (YAML under the data root) |
 | src/reactive_lob_sim/tape/*.py, contracts/*.py | I1 tape I/O, fills, PIT client, calibration-file contracts |
 | src/reactive_lob_sim/reproduce.py, experiments.py | `make reproduce` study; `make report` tables |
-| tests/unit/*, tests/integration/test_study.py | 40 tests, including a shrunken end-to-end study and the service |
+| tests/unit/*, tests/integration/test_study.py | 55 tests, including MOEX rules (test_moex.py) and a shrunken end-to-end study |
 
 ## State at handover
 
@@ -81,3 +84,28 @@ rejects unknown document keys, unknown shock keys and unknown params. Keep those
 2. The B023 closure bug in reproduce.py (a lambda that captured a loop variable) passed tests and was found only by lint.
 3. The first report draft had numbers that were not in the outputs (an OFI R squared copied from the wrong row, a derived speed figure computed wrongly, a "closest spread" claim that the table contradicts). Check every number in a report against the generated files, and recompute every derived number.
 4. These lessons apply platform-wide. Compound shell commands were denied for subagents; `make -C`, `git -C` and `.venv/bin/python` work. Subagents may not write report files (a harness rule), so return the report text to the orchestrator. Commit early, because of the rate limit.
+
+## MOEX adaptation (2026-11-06)
+
+1. Default market: SBER-RUB-TQBR (lot 10, tick 0.01, band 20% around the start price), commission 25 bps both
+   sides, 0 for T-Capital funds (`instruments.*`, I1's zero-fee list). `instruments.symbols` lists SBER, GAZP,
+   LKOH and TMOS; I1's `universe_moex.json` overrides lot and tick when present.
+2. Engine: `TradingRules` rejects odd lots, off-grid prices and prices outside the band; market orders carry
+   the band edge as protection. Phases (`moex.sessions.Phase`): in an auction orders are collected (market
+   orders become limits at the band edge) and `set_phase` uncrosses at the equilibrium price; halted, break
+   and closed reject new orders. `sessions.apply: true` follows the MSK schedule (morning, main, evening,
+   weekend sessions with opening and closing auctions).
+3. Crypto: `abm.crypto: null`; its parameters are in `config/crypto.yaml`, the modules in `crypto/`. Scenarios
+   `liquidation_cascade` and `funding_shock` need it and raise an error without it. The generative market's
+   funding/OI conditioning is 0 without it.
+4. Scenarios: opening-auction-imbalance, dividend-gap, key-rate-surprise, trading-halt added (9 in the library;
+   formats unchanged, so I6's s3_adapter only needs the new kinds and their params).
+5. Strategies are sized in lots (`quote_lots`, `trade_lots`, `total_lots`, `*_lots` limits).
+6. Fixes found on the way: empty size bins of the GRU tokenizer gave NaN sizes with discrete lot sizes (now the
+   nearest filled bin).
+7. `make lint typecheck test`: 55 passed, 91% coverage. `make report` rerun (46 s): numbers in README.
+8. Open: real calibration needs a longer T-Bank capture (48 events in 2 minutes, 200 needed); kappa probe gave 0
+   on the MOEX world; halts with a reopening auction collect orders for the whole halt.
+
+Lesson: an interrupted refactor left the engine signature changed and four callers unmigrated; run
+`make typecheck` first when resuming someone else's work.

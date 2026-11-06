@@ -5,7 +5,11 @@ cancellation by id. Sorted price lists per side give the touch in O(1) and inser
 
 Supported: limit and market orders, cancel, modify (a size reduction keeps queue priority; a price change or
 a size increase loses it, as on most venues), and the time-in-force flags GTC, IOC, FOK and POST_ONLY.
-Market orders behave as IOC. There is no self-trade prevention.
+Market orders behave as IOC and may carry a protection price. There is no self-trade prevention.
+
+Call auctions: with ``matching`` off the book only collects orders (GTC and POST_ONLY limits rest even when
+they cross; market, IOC and FOK orders are rejected), and :meth:`OrderBook.uncross` executes the crossed part
+at one price chosen by :func:`reactive_lob_sim.engine.auction.equilibrium`.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ class OrderBook:
         self._orders: dict[int, RestingOrder] = {}
         self._next_id = 1
         self._arrival = 0
+        self.matching = True
 
     # ------------------------------------------------------------------ queries
     @property
@@ -187,12 +192,40 @@ class OrderBook:
                 break
         return total
 
+    def uncross(self, price_tick: int) -> list[Fill]:
+        """Execute every bid at or above ``price_tick`` against every ask at or below it, at that price.
+
+        Orders meet in price-time priority on each side. The order that arrived later is the taker of each
+        fill. Matching is switched back on afterwards.
+        """
+        fills: list[Fill] = []
+        while True:
+            bid, ask = self.best(Side.BUY), self.best(Side.SELL)
+            if bid is None or ask is None or bid < price_tick or ask > price_tick:
+                break
+            b = next(iter(self._levels[Side.BUY][bid].values()))
+            a = next(iter(self._levels[Side.SELL][ask].values()))
+            take = min(b.qty, a.qty)
+            maker, taker = (b, a) if b.arrival < a.arrival else (a, b)
+            fills.append(
+                Fill(maker.order_id, maker.owner, taker.order_id, taker.owner, taker.side, price_tick, take)
+            )
+            for order in (b, a):
+                order.qty -= take
+                self._level_qty[order.side][order.price_tick] -= take
+                if order.qty <= self._eps:
+                    self._remove(order)
+        self.matching = True
+        return fills
+
     def _execute(self, order_id: int, req: OrderRequest) -> SubmitResult:
         if req.qty <= self._eps:
             return self._reject(order_id, RejectReason.INVALID_QTY)
         if req.order_type is OrderType.LIMIT and req.price_tick is None:
             return self._reject(order_id, RejectReason.INVALID_PRICE)
-        limit = req.price_tick if req.order_type is OrderType.LIMIT else None
+        if not self.matching:
+            return self._collect(order_id, req)
+        limit = req.price_tick
         if req.tif is TimeInForce.POST_ONLY and self._crosses(req.side, limit):
             return self._reject(order_id, RejectReason.POST_ONLY_WOULD_CROSS)
         if req.tif is TimeInForce.FOK and self._available(req.side, limit, req.qty) < req.qty - self._eps:
@@ -229,6 +262,17 @@ class OrderBook:
             queue_ahead,
             tuple(touched),
         )
+
+    def _collect(self, order_id: int, req: OrderRequest) -> SubmitResult:
+        """Auction order collection: limit orders rest without matching; others are rejected."""
+        if req.order_type is OrderType.MARKET or req.tif in (TimeInForce.IOC, TimeInForce.FOK):
+            return self._reject(order_id, RejectReason.NOT_ALLOWED_IN_PHASE)
+        assert req.price_tick is not None
+        queue_ahead = self._level_qty[req.side].get(req.price_tick, 0.0)
+        self._insert(RestingOrder(order_id, req.owner, req.side, req.price_tick, req.qty, self._arrival))
+        self._arrival += 1
+        touched = ((req.side, req.price_tick),)
+        return SubmitResult(order_id, OrderStatus.ACCEPTED, (), req.qty, None, queue_ahead, touched)
 
     def _match(
         self, order_id: int, req: OrderRequest, limit: int | None

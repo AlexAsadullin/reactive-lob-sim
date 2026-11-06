@@ -85,7 +85,10 @@ def fit_index_vol(book: BookSeries, tick_size: float, interval_s: float) -> floa
 
 
 def fit_macro(prior: ABMParams, cond: ConditioningSeries) -> dict[str, float]:
+    """Funding and open-interest parameters (crypto module only; empty for MOEX)."""
     out: dict[str, float] = {}
+    if prior.crypto is None:
+        return out
     if cond.funding.size >= 2:
         out["funding_base"] = float(np.mean(cond.funding))
         out["funding_noise_sd"] = float(np.std(cond.funding))
@@ -95,7 +98,7 @@ def fit_macro(prior: ABMParams, cond: ConditioningSeries) -> dict[str, float]:
     if cond.oi.size >= 2:
         out["oi_initial"] = float(cond.oi[-1])
         dt = np.diff(cond.oi_ts) / NS_PER_S
-        lr = np.diff(np.log(np.maximum(cond.oi, prior.macro.oi_initial * _MIN_OI_FRACTION)))
+        lr = np.diff(np.log(np.maximum(cond.oi, prior.crypto.macro.oi_initial * _MIN_OI_FRACTION)))
         ok = dt > 0
         if ok.any():
             out["oi_vol_per_sqrt_s"] = float(np.std(lr[ok] / np.sqrt(dt[ok])))
@@ -125,7 +128,9 @@ def fit_flow(
         update={"offset_geom_p": p, "min_offset_ticks": k_min, "n_ref_orders": n_ref, "size": lim_size}
     )
     traders = prior.traders.model_copy(update={"size": mkt_size})
-    macro = prior.macro.model_copy(update=fit_macro(prior, cond))
+    crypto = prior.crypto
+    if crypto is not None:
+        crypto = crypto.model_copy(update={"macro": crypto.macro.model_copy(update=fit_macro(prior, cond))})
     first_mid = float(events.mid[0]) * tick_size
     params = prior.model_copy(
         update={
@@ -135,7 +140,7 @@ def fit_flow(
             "traders": traders,
             "fundamental_vol_per_sqrt_s": fit_index_vol(book, tick_size, flow_cfg.vol_interval_s),
             "regimes": [prior.regimes[0].model_copy(update={"vol_multiplier": 1.0, "rate_multiplier": 1.0})],
-            "macro": macro,
+            "crypto": crypto,
         }
     )
     return FlowFit(ABMParams.model_validate(params.model_dump()), hfit, len(events))
@@ -155,7 +160,11 @@ def zero_intelligence(params: ABMParams) -> ABMParams:
             "traders": traders,
             "liquidity": liquidity,
             "impact": params.impact.model_copy(update={"kappa": 0.0}),
-            "liquidation": params.liquidation.model_copy(update={"enabled": False}),
+            "crypto": None
+            if params.crypto is None
+            else params.crypto.model_copy(
+                update={"liquidation": params.crypto.liquidation.model_copy(update={"enabled": False})}
+            ),
             "fundamental_vol_per_sqrt_s": 0.0,
         }
     )

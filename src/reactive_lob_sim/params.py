@@ -64,7 +64,7 @@ class HawkesParams(_Model):
 
 
 class SizeDist(_Model):
-    """Log-normal order size in base units, rounded to the lot size and floored at one lot."""
+    """Log-normal order size in shares (base units), rounded to whole lots and floored at one lot."""
 
     log_mean: float
     log_sd: float = Field(ge=0)
@@ -97,8 +97,6 @@ class TraderMix(_Model):
     momentum: float = Field(ge=0)
     fundamental_threshold_ticks: float = Field(ge=0)
     momentum_lookback_s: float = Field(gt=0)
-    funding_flow_sensitivity: float = Field(ge=0, le=0.5)
-    funding_scale: float = Field(gt=0)
     size: SizeDist
 
 
@@ -109,7 +107,7 @@ class Regime(_Model):
 
 
 class LiquidationParams(_Model):
-    """Leveraged-position book that turns price moves into forced market orders.
+    """Leveraged-position book that turns price moves into forced market orders (crypto module only).
 
     The long share of open interest is ``0.5 + crowding_sensitivity * tanh(funding / funding_scale)``
     (positive funding means longs pay, i.e. longs are crowded). ``oi_fraction_at_risk`` of open interest is
@@ -128,7 +126,7 @@ class LiquidationParams(_Model):
 
 
 class MacroParams(_Model):
-    """Funding and open interest dynamics of a perpetual swap.
+    """Funding and open interest dynamics of a perpetual swap (crypto module only).
 
     Funding at each interval is ``base + premium_coeff * (mark - index) / index + noise``, clipped to
     ``[-clip, clip]``, where the index is the fundamental value. Open interest follows a discretised
@@ -143,6 +141,41 @@ class MacroParams(_Model):
     oi_initial: float = Field(gt=0)
     oi_reversion_per_s: float = Field(ge=0)
     oi_vol_per_sqrt_s: float = Field(ge=0)
+
+
+class CryptoParams(_Model):
+    """The optional crypto module (perpetual swaps): funding, open interest and liquidation cascades.
+
+    Off for MOEX (``ABMParams.crypto`` is ``None``). When present, noise traders tilt toward selling when
+    funding is positive, with probability ``funding_flow_sensitivity * tanh(funding / funding_scale)``.
+    """
+
+    funding_flow_sensitivity: float = Field(ge=0, le=0.5)
+    funding_scale: float = Field(gt=0)
+    liquidation: LiquidationParams
+    macro: MacroParams
+
+
+class SessionFlow(_Model):
+    """Flow intensity by MOEX trading phase, relative to the main session's continuous trading.
+
+    ``rate_multipliers`` maps a trading session (``morning``, ``main``, ``evening``, ``weekend``) to the
+    multiplier of the Hawkes baseline during its continuous phase; ``auction_rate_multiplier`` applies during
+    every auction (order collection). Closed periods and breaks have no flow. The multipliers are calibrated
+    from the trade counts per session of a full trading day (see ``calibration.moex``).
+    """
+
+    rate_multipliers: dict[str, float]
+    auction_rate_multiplier: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if any(v < 0 for v in self.rate_multipliers.values()):
+            raise ValueError("session rate multipliers must be non-negative")
+        return self
+
+    def multiplier(self, session: str) -> float:
+        return self.rate_multipliers.get(session, 1.0)
 
 
 class ImpactParams(_Model):
@@ -186,10 +219,10 @@ class ABMParams(_Model):
     traders: TraderMix
     fundamental_vol_per_sqrt_s: float = Field(ge=0)
     regimes: list[Regime] = Field(min_length=1)
-    liquidation: LiquidationParams
-    macro: MacroParams
     impact: ImpactParams
     initial_book: InitialBook
+    session_flow: SessionFlow
+    crypto: CryptoParams | None = None
 
     @model_validator(mode="after")
     def _check_dims(self) -> Self:

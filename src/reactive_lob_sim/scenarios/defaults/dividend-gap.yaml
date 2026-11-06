@@ -1,0 +1,11 @@
+schema_version: "1"
+id: dividend-gap
+description: >-
+  Ex-dividend gap: the value drops by the dividend (300 bps, about a typical Russian blue-chip payout of 3%)
+  while the book is cleared and re-formed in a 30 s auction, as on the morning after the record date.
+default_duration_s: 300
+shocks:
+  - kind: dividend_gap
+    start_s: 60
+    duration_s: 30
+    params: {dividend_bps: 300.0}

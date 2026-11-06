@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from reactive_lob_sim.abm.liquidation import LiquidationBook
 from reactive_lob_sim.calibration.flow import zero_intelligence
+from reactive_lob_sim.crypto.liquidation import LiquidationBook
 from reactive_lob_sim.engine.l3market import IdPool
 from reactive_lob_sim.engine.types import OrderStatus, OrderType, Side
 from reactive_lob_sim.gap.outcomes import outcome_from_run
@@ -50,8 +50,7 @@ def test_abm_is_deterministic_and_records_tape(settings: Settings, ctx: SimConte
     m.advance(120.0)
     tape = rec.to_tape()
     assert tape["book_snapshot"].num_rows > 0
-    # fixes happen strictly inside the horizon
-    assert tape["funding"].num_rows == int((120 - 1e-9) // settings.abm.macro.funding_interval_s)
+    assert "funding" not in tape.tables or tape["funding"].num_rows == 0  # MOEX: no funding fixes
     bs = book_series(tape, ctx.tick_size, 5)
     assert np.all(bs.ask > bs.bid)
     assert m.n_scheduled_events > 0
@@ -95,7 +94,16 @@ def test_spread_widening_and_withdrawal_shocks(settings: Settings, ctx: SimConte
     assert m.book.n_orders() < 40
 
 
-def test_liquidation_cascade_and_funding_shock(settings: Settings, ctx: SimContext) -> None:
+def test_liquidation_cascade_and_funding_shock(crypto_settings: Settings, crypto_ctx: SimContext) -> None:
+    settings, ctx = crypto_settings, crypto_ctx
+    assert settings.abm.crypto is not None
+    rec = ctx.recorder("c")
+    m = ctx.abm(settings.abm, 120.0, 7, rec)
+    m.advance(120.0)
+    # fixes happen strictly inside the horizon
+    assert rec.to_tape()["funding"].num_rows == int(
+        (120 - 1e-9) // settings.abm.crypto.macro.funding_interval_s
+    )
     calm = ctx.abm(settings.abm, 120.0, 5)
     calm.advance(120.0)
     shock = ctx.abm(
@@ -145,15 +153,25 @@ def test_liquidation_book_triggers() -> None:
     assert lb.triggered(98.0) == [(Side.SELL, 2.5)]
 
 
-def test_forced_order_after_emptied_side_still_executes(settings: Settings, ctx: SimContext) -> None:
+def test_crypto_scenarios_need_the_crypto_module(settings: Settings, ctx: SimContext) -> None:
+    with pytest.raises(ValueError, match="crypto module"):
+        ctx.abm(settings.abm, 120.0, 5, None, scenario("funding_shock", rate=0.003))
+
+
+def test_forced_order_after_emptied_side_still_executes(
+    crypto_settings: Settings, crypto_ctx: SimContext
+) -> None:
     """A batch whose first forced sell sweeps every bid must not drop the second forced sell.
 
     ``LiquidationBook.triggered`` removes the positions before they execute, so skipping an order on an
     empty side would lose the liquidation and leave open interest too high.
     """
-    from reactive_lob_sim.abm.liquidation import Position
+    from reactive_lob_sim.crypto.liquidation import Position
 
+    settings, ctx = crypto_settings, crypto_ctx
     m = ctx.abm(settings.abm, 120.0, 5)
+    assert m.liquidations is not None
+    assert m.macro is not None
     mid = m.mid_price()
     assert mid is not None
     bid_depth = sum(q for _, q in m.book.levels(Side.BUY, 10_000))
@@ -209,12 +227,18 @@ def test_scenario_validation_schedule_and_library(tmp_path: Path) -> None:
     assert list_scenarios(tmp_path / "missing") == []
 
 
+def test_zero_intelligence_baseline_switches_liquidations_off(crypto_settings: Settings) -> None:
+    zi = zero_intelligence(crypto_settings.abm)
+    assert zi.crypto is not None
+    assert not zi.crypto.liquidation.enabled
+
+
 def test_zero_intelligence_baseline(settings: Settings) -> None:
     zi = zero_intelligence(settings.abm)
     assert zi.hawkes.spectral_radius() == 0.0
     np.testing.assert_allclose(zi.hawkes.mu, settings.abm.hawkes.stationary_rates())
     assert zi.impact.kappa == 0.0
-    assert not zi.liquidation.enabled
+    assert zi.crypto is None  # MOEX: no liquidation book at all
     assert len(EVENT_TYPES) == zi.hawkes.dim
 
 
@@ -238,18 +262,19 @@ def test_strategies_run_in_abm(settings: Settings, ctx: SimContext) -> None:
             ctx.abm(settings.abm, 150.0, 9), build_strategy(spec), 149.0, settings.runner.decision_interval_s
         )
         results[spec.id] = (run, outcome_from_run(run))
+    lot = ctx.lot_size
     _, twap = results["twap-buy-market"]
-    assert twap.filled_qty == pytest.approx(30.0, abs=0.01)
+    assert twap.filled_qty == pytest.approx(30 * lot, abs=0.01)
     assert twap.fill_rate == pytest.approx(1.0)
     mm_run, _ = results["mm-touch"]
     pos = 0.0
     for f in mm_run.fills:
         pos += f.side.sign * f.qty
-        assert abs(pos) <= 5.0 + 1.0 + 1e-9
+        assert abs(pos) <= (5 + 1) * lot + 1e-9
     assert any(f.liquidity.value == "maker" for f in mm_run.fills)
     assert results["mom-fast"][1].n_fills > 0
     passive = results["twap-sell-passive"][1]
-    assert passive.filled_qty == pytest.approx(30.0, abs=0.01)
+    assert passive.filled_qty == pytest.approx(30 * lot, abs=0.01)
 
 
 def test_market_submit_and_cancel_paths(settings: Settings, ctx: SimContext) -> None:
@@ -258,12 +283,14 @@ def test_market_submit_and_cancel_paths(settings: Settings, ctx: SimContext) -> 
     view = m.view()
     assert view.mid is not None
     assert view.spread is not None
-    ack = m.submit(Side.BUY, OrderType.LIMIT, 1.0, view.best_bid - 0.05)  # type: ignore[operator]
+    lot = ctx.lot_size
+    assert m.submit(Side.BUY, OrderType.LIMIT, lot / 2, view.best_bid).status is OrderStatus.REJECTED
+    ack = m.submit(Side.BUY, OrderType.LIMIT, lot, view.best_bid - 0.05)  # type: ignore[operator]
     assert ack.status is OrderStatus.ACCEPTED
     assert m.open_orders() == [ack.order_id]
     assert m.cancel(ack.order_id)
     assert not m.cancel(ack.order_id)
-    assert m.submit(Side.SELL, OrderType.LIMIT, 1.0, None).status is OrderStatus.REJECTED
+    assert m.submit(Side.SELL, OrderType.LIMIT, lot, None).status is OrderStatus.REJECTED
     assert m.tape() is None
 
 

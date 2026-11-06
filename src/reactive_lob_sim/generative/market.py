@@ -15,9 +15,10 @@ from collections import deque
 import numpy as np
 import torch
 
-from reactive_lob_sim.abm.macro import MIN_OI_FRACTION, FundingOI
+from reactive_lob_sim.crypto.macro import MIN_OI_FRACTION, FundingOI
 from reactive_lob_sim.engine.accounting import FeeSchedule
 from reactive_lob_sim.engine.l3market import L3Market
+from reactive_lob_sim.engine.rules import TradingRules
 from reactive_lob_sim.engine.types import OrderRequest, OrderType, Owner, Side
 from reactive_lob_sim.generative.model import OrderFlowGRU
 from reactive_lob_sim.generative.tokenizer import Tokenizer, TokenStream
@@ -41,15 +42,14 @@ class GenerativeMarket(L3Market):
         params: ABMParams,
         horizon: float,
         seed: int,
-        tick_size: float,
-        lot_size: float,
+        rules: TradingRules,
         qty_tolerance: float,
         fees: FeeSchedule,
         temperature: float,
         recorder: TapeRecorder | None = None,
         snapshot_depth: int = 0,
     ) -> None:
-        super().__init__(tick_size, lot_size, qty_tolerance, fees, params.impact, recorder)
+        super().__init__(rules, qty_tolerance, fees, params.impact, recorder)
         self.model = model
         self.tok = tok
         self.p = params
@@ -57,11 +57,13 @@ class GenerativeMarket(L3Market):
         self._temp = temperature
         seeds = np.random.SeedSequence(seed).spawn(3)
         self._rng = np.random.default_rng(seeds[0])
-        self.macro = FundingOI(params.macro, np.random.default_rng(seeds[1]))
+        # Funding and open interest exist only with the crypto module; for MOEX the conditioning is 0.
+        crypto = params.crypto
+        self.macro = FundingOI(crypto.macro, np.random.default_rng(seeds[1])) if crypto is not None else None
         self._lp_rng = np.random.default_rng(seeds[2])
-        self.funding_rate = self.macro.rate
-        self.open_interest = self.macro.open_interest
-        self._last_log_oi = math.log(self.open_interest)
+        self.funding_rate = self.macro.rate if self.macro is not None else 0.0
+        self.open_interest = self.macro.open_interest if self.macro is not None else 0.0
+        self._last_log_oi = math.log(self.open_interest) if self.open_interest > 0 else 0.0
         self._oi_change = 0.0
         self._r2: deque[tuple[float, float]] = deque()
         self._r2_sum = 0.0
@@ -131,16 +133,16 @@ class GenerativeMarket(L3Market):
         candidates = []
         if self._pending is not None:
             candidates.append(self._pending[0])
-        if self.macro.next_fix < self.horizon:
+        if self.macro is not None and self.macro.next_fix < self.horizon:
             candidates.append(self.macro.next_fix)
         return min(candidates) if candidates else None
 
     def _process_next_event(self) -> None:
-        if self.macro.due(self.t):
+        if self.macro is not None and self.p.crypto is not None and self.macro.due(self.t):
             mid = self.mid_price() or self.p.initial_price
             self.funding_rate = self.macro.fix(mid, mid, None)
             self.open_interest = self.macro.open_interest
-            log_oi = math.log(max(self.open_interest, self.p.macro.oi_initial * MIN_OI_FRACTION))
+            log_oi = math.log(max(self.open_interest, self.p.crypto.macro.oi_initial * MIN_OI_FRACTION))
             self._oi_change, self._last_log_oi = log_oi - self._last_log_oi, log_oi
             rec = self.recorder
             if rec is not None:

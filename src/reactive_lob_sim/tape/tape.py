@@ -19,6 +19,7 @@ from reactive_lob_sim.tape.schema import (
     OPEN_INTEREST,
     SCHEMAS,
     TRADES,
+    TRADING_STATUS,
     conform,
     empty_table,
 )
@@ -111,6 +112,7 @@ class TapeRecorder:
         self._trade_id = 0
         self._snapshot_id = 0
         self._last_delta_seq: dict[tuple[str, int], int] = {}
+        self.trading_session: str | None = None
         self._cols = {ch: _Columns(tuple(SCHEMAS[ch].names)) for ch in CHANNELS}
 
     def _common(self, t_s: float) -> tuple[object, ...]:
@@ -129,8 +131,19 @@ class TapeRecorder:
         self._trade_id += 1
         common = self._common(t_s)
         self._cols[TRADES].append(
-            (*common, f"{self._conn}-{self._trade_id}", self.price(price_tick), size, aggressor.value)
+            (
+                *common,
+                f"{self._conn}-{self._trade_id}",
+                self.price(price_tick),
+                size,
+                aggressor.value,
+                self.trading_session,
+            )
         )
+
+    def trading_status(self, t_s: float, status: str, limit_allowed: bool, market_allowed: bool) -> None:
+        common = self._common(t_s)
+        self._cols[TRADING_STATUS].append((*common, status, limit_allowed, market_allowed))
 
     def book_delta(self, t_s: float, side: Side, price_tick: int, size: float) -> None:
         common = self._common(t_s)
@@ -173,6 +186,7 @@ __all__ = [
     "LIQUIDATIONS",
     "OPEN_INTEREST",
     "TRADES",
+    "TRADING_STATUS",
     "Tape",
     "TapeRecorder",
 ]

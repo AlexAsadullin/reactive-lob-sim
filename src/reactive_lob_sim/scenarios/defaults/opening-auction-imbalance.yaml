@@ -1,0 +1,12 @@
+schema_version: "1"
+id: opening-auction-imbalance
+description: >-
+  A 60 s discrete auction (the MOEX opening-auction mechanism) in which buy orders worth twice the
+  visible depth arrive across 40 bps above the touch; the book uncrosses at the equilibrium price when the
+  auction ends and continuous trading resumes from there.
+default_duration_s: 300
+shocks:
+  - kind: opening_auction_imbalance
+    start_s: 60
+    duration_s: 60
+    params: {imbalance: 0.8, depth_multiple: 2.0, price_range_bps: 40.0}

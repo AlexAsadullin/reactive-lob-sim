@@ -1,0 +1,11 @@
+schema_version: "1"
+id: key-rate-surprise
+description: >-
+  Bank of Russia key-rate surprise of +100 bp at the 13:30 MSK announcement: the value falls 4 bps per basis
+  point of surprise, 60% of resting liquidity is pulled and volatility doubles for five minutes.
+default_duration_s: 600
+shocks:
+  - kind: key_rate_surprise
+    start_s: 120
+    duration_s: 300
+    params: {surprise_bp: 100.0, bps_per_bp: -4.0, vol_multiplier: 2.0, cancel_fraction: 0.6}
